@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.IO 测试</title>
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #1a1a2e; color: #e0e0e0; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 8px; }
+        .connected { background: #10b981; }
+        .disconnected { background: #ef4444; }
+        button { padding: 15px 30px; font-size: 16px; cursor: pointer; margin: 5px; }
+        #log { background: #0f0f1a; padding: 15px; border-radius: 8px; max-height: 300px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h1>Socket.IO 连接测试</h1>
+
+    <div id="status" class="status disconnected">未连接</div>
+
+    <button onclick="connect()">连接</button>
+    <button onclick="startRecording()">开始录音</button>
+    <button onclick="sendAudio()">发送测试音频</button>
+    <button onclick="stopRecording()">停止录音</button>
+    <button onclick="disconnect()">断开</button>
+
+    <h2>日志</h2>
+    <div id="log"></div>
+
+    <h2>转写结果</h2>
+    <div id="result" style="background:#0f0f1a; padding:15px; border-radius:8px;"></div>
+
+    <script>
+        let socket = null;
+
+        function log(msg) {
+            const div = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            div.innerHTML += `<div>[${time}] ${msg}</div>`;
+            div.scrollTop = div.scrollHeight;
+        }
+
+        function connect() {
+            log('正在连接...');
+
+            socket = io('http://localhost:5000', {
+                transports: ['polling']  // 只用polling，不用websocket
+            });
+
+            socket.on('connect', () => {
+                log('✅ Socket连接成功!');
+                document.getElementById('status').className = 'status connected';
+                document.getElementById('status').innerText = '已连接 (polling)';
+            });
+
+            socket.on('connected', (data) => {
+                log(`✅ 会话创建: ${data.session_id}`);
+            });
+
+            socket.on('transcription_result', (data) => {
+                log(`📝 转写: ${data.text} (final: ${data.is_final})`);
+                document.getElementById('result').innerText += data.text + ' ';
+            });
+
+            socket.on('disconnect', () => {
+                log('❌ 断开连接');
+                document.getElementById('status').className = 'status disconnected';
+                document.getElementById('status').innerText = '未连接';
+            });
+
+            socket.on('error', (err) => {
+                log(`❌ 错误: ${err}`);
+            });
+
+            socket.on('connect_error', (err) => {
+                log(`❌ 连接错误: ${err.message}`);
+            });
+        }
+
+        function startRecording() {
+            if (socket && socket.connected) {
+                socket.emit('start_recording');
+                log('发送: start_recording');
+            } else {
+                log('请先连接');
+            }
+        }
+
+        function sendAudio() {
+            if (socket && socket.connected) {
+                // 发送空的测试音频数据
+                const audioData = new Int16Array(4000);  // 250ms空音频
+                socket.emit('audio_data', audioData.buffer);
+                log('发送: audio_data (4000 bytes)');
+            } else {
+                log('请先连接');
+            }
+        }
+
+        function stopRecording() {
+            if (socket && socket.connected) {
+                socket.emit('stop_recording');
+                log('发送: stop_recording');
+            } else {
+                log('请先连接');
+            }
+        }
+
+        function disconnect() {
+            if (socket) {
+                socket.disconnect();
+                log('主动断开');
+            }
+        }
+
+        // 自动连接
+        setTimeout(connect, 1000);
+    </script>
+</body>
+</html>

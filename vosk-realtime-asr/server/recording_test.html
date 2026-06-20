@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>录音测试</title>
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #1a1a2e; color: #e0e0e0; }
+        .connected { color: #0f0; }
+        .recording { color: #ff0; font-size: 20px; }
+        #result { background: #0f0f1a; padding: 15px; border-radius: 8px; min-height: 100px; }
+        button { padding: 15px 30px; margin: 10px; font-size: 16px; cursor: pointer; border-radius: 8px; }
+        .btn-start { background: #10b981; color: white; }
+        .btn-stop { background: #ef4444; color: white; }
+    </style>
+</head>
+<body>
+    <h1>🎤 实时语音转写测试</h1>
+
+    <div id="status">状态: 未连接</div>
+
+    <div>
+        <button class="btn-start" onclick="startRecording()">🎤 开始录音</button>
+        <button class="btn-stop" onclick="stopRecording()">⏹ 停止录音</button>
+    </div>
+
+    <div id="recording-status"></div>
+
+    <h2>转写结果</h2>
+    <div id="result">等待录音...</div>
+
+    <script>
+        let socket = null;
+        let audioContext = null;
+        let mediaStream = null;
+        let processor = null;
+        let isRecording = false;
+
+        // 连接Socket.IO
+        function connectSocket() {
+            socket = io('http://localhost:5000', {
+                transports: ['polling', 'websocket']
+            });
+
+            socket.on('connect', () => {
+                document.getElementById('status').innerHTML = '状态: <span class="connected">已连接</span>';
+                console.log('Socket已连接');
+            });
+
+            socket.on('connected', (data) => {
+                console.log('会话ID:', data.session_id);
+            });
+
+            socket.on('transcription_result', (data) => {
+                console.log('转写:', data);
+                let resultDiv = document.getElementById('result');
+
+                if (data.is_final) {
+                    resultDiv.innerHTML += '<div style="margin:5px 0;color:#0f0">' + data.text + '</div>';
+                } else {
+                    // 部分结果，显示在最后一行
+                    let lines = resultDiv.innerHTML.split('</div>');
+                    if (lines.length > 1) {
+                        lines[lines.length - 1] = '<div style="color:#888">' + data.text + '...</div>';
+                        resultDiv.innerHTML = lines.join('</div>');
+                    } else {
+                        resultDiv.innerHTML = '<div style="color:#888">' + data.text + '...</div>';
+                    }
+                }
+            });
+
+            socket.on('disconnect', () => {
+                document.getElementById('status').innerHTML = '状态: 未连接';
+            });
+        }
+
+        // 开始录音
+        async function startRecording() {
+            try {
+                // 1. 获取麦克风
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+                console.log('麦克风已获取');
+
+                // 2. 创建AudioContext
+                audioContext = new AudioContext({ sampleRate: 16000 });
+                console.log('AudioContext创建, 采样率:', audioContext.sampleRate);
+
+                // 3. 创建源节点
+                const source = audioContext.createMediaStreamSource(mediaStream);
+
+                // 4. 创建ScriptProcessor (旧API，但兼容性好)
+                processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+                // 5. 处理音频数据
+                processor.onaudioprocess = (e) => {
+                    if (!isRecording) return;
+
+                    const inputData = e.inputBuffer.getChannelData(0);
+
+                    // Float32 转 Int16 (PCM)
+                    const pcmData = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        const sample = Math.max(-1, Math.min(1, inputData[i]));
+                        pcmData[i] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+                    }
+
+                    // 发送到服务器
+                    if (socket && socket.connected) {
+                        socket.emit('audio_data', pcmData.buffer);
+                    }
+                };
+
+                // 6. 连接节点
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+
+                // 7. 发送开始信号
+                socket.emit('start_recording');
+
+                isRecording = true;
+                document.getElementById('recording-status').innerHTML = '<span class="recording">● 正在录音...</span>';
+                document.getElementById('result').innerHTML = '';
+
+                console.log('录音已开始');
+
+            } catch (error) {
+                console.error('录音失败:', error);
+                alert('无法访问麦克风: ' + error.message);
+            }
+        }
+
+        // 停止录音
+        function stopRecording() {
+            isRecording = false;
+
+            if (processor) {
+                processor.disconnect();
+                processor = null;
+            }
+
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+
+            if (socket) {
+                socket.emit('stop_recording');
+            }
+
+            document.getElementById('recording-status').innerHTML = '录音已停止';
+            console.log('录音已停止');
+        }
+
+        // 启动时连接
+        connectSocket();
+    </script>
+</body>
+</html>

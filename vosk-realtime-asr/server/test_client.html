@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>直接测试 Socket.IO</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #000; color: #0f0; }
+        button { padding: 10px 20px; margin: 5px; background: #333; color: #0f0; border: 1px solid #0f0; }
+        #log { white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h1>Socket.IO Polling 测试</h1>
+    <button onclick="testPolling()">测试 Polling 连接</button>
+    <div id="log"></div>
+
+    <script>
+        function log(msg) {
+            document.getElementById('log').textContent += msg + '\n';
+        }
+
+        async function testPolling() {
+            log('=== 开始测试 ===');
+
+            try {
+                // 1. 建立连接
+                log('1. 发送连接请求...');
+                let r = await fetch('http://localhost:5000/socket.io/?EIO=4&transport=polling');
+                let text = await r.text();
+                log('响应: ' + text);
+
+                // 解析sid
+                let data = text.substring(1);
+                let json = JSON.parse(data);
+                let sid = json.sid;
+                log('Session ID: ' + sid);
+
+                // 2. 发送心跳
+                log('2. 发送心跳...');
+                r = await fetch('http://localhost:5000/socket.io/?EIO=4&transport=polling&sid=' + sid, {
+                    method: 'POST',
+                    body: '2'
+                });
+                log('心跳状态: ' + r.status);
+
+                // 3. 接收
+                log('3. 接收消息...');
+                r = await fetch('http://localhost:5000/socket.io/?EIO=4&transport=polling&sid=' + sid);
+                text = await r.text();
+                log('消息: ' + text);
+
+                log('\n✅ 测试成功!');
+
+            } catch(e) {
+                log('❌ 错误: ' + e);
+            }
+        }
+
+        // 自动测试
+        testPolling();
+    </script>
+</body>
+</html>

@@ -1,0 +1,116 @@
+{
+  "dashboard": {
+    "title": "Vosk 实时语音转写监控",
+    "uid": "vosk-asr-dashboard",
+    "version": 1,
+    "refresh": "5s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "活跃连接数",
+        "type": "gauge",
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+        "targets": [
+          {
+            "expr": "ws_connections_active",
+            "legendFormat": "当前连接"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "max": 100,
+            "min": 0,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": 0},
+                {"color": "yellow", "value": 50},
+                {"color": "red", "value": 80}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "转写延迟",
+        "type": "graph",
+        "gridPos": {"x": 4, "y": 0, "w": 8, "h": 4},
+        "targets": [
+          {
+            "expr": "rate(transcription_latency_ms_sum[5m]) / rate(transcription_latency_ms_count[5m])",
+            "legendFormat": "平均延迟 (ms)"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(transcription_latency_ms_bucket[5m]))",
+            "legendFormat": "P99 延迟"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "转写字数统计",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 0, "w": 8, "h": 4},
+        "targets": [
+          {
+            "expr": "rate(transcription_chars_total[1m])",
+            "legendFormat": "字数/分钟"
+          },
+          {
+            "expr": "transcription_chars_total",
+            "legendFormat": "累计字数"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "音频吞吐量",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 4, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "rate(audio_bytes_received_total[1m])",
+            "legendFormat": "接收字节/秒"
+          },
+          {
+            "expr": "rate(audio_chunks_processed_total[1m])",
+            "legendFormat": "音频块/秒"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "系统资源",
+        "type": "graph",
+        "gridPos": {"x": 6, "y": 4, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "system_cpu_usage_percent",
+            "legendFormat": "CPU (%)"
+          },
+          {
+            "expr": "system_memory_usage_mb / 1024",
+            "legendFormat": "内存 (GB)"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "错误统计",
+        "type": "stat",
+        "gridPos": {"x": 12, "y": 4, "w": 4, "h": 4},
+        "targets": [
+          {
+            "expr": "transcription_errors_total",
+            "legendFormat": "转写错误"
+          },
+          {
+            "expr": "ws_connection_errors_total",
+            "legendFormat": "连接错误"
+          }
+        ]
+      }
+    ]
+  }
+}

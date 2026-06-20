@@ -1,0 +1,83 @@
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# ===== 密钥 / 凭据 =====
+# 警告：.env 文件当前被显式跟踪（用户明确要求）
+# 仅示例 / 模板可通过 *.example 模式排除
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+secrets/
+credentials/
+# 但 .env 自身需要被显式添加（git add -f）
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# ===== Node / Frontend =====
+node_modules/
+.pnp
+.pnp.js
+dist/
+build/
+out/
+.vite/
+.parcel-cache/
+.next/
+.nuxt/
+.svelte-kit/
+.cache/
+
+# ===== 日志 =====
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== 编辑器 / IDE =====
+.idea/
+.vscode/
+*.iml
+.cursor/
+
+# ===== 项目特定 =====
+# Vosk 中文模型（2GB+ 二进制，从 https://alphacephei.com/vosk/models 下载）
+vosk-realtime-asr/server/models/
+
+# 测试产物
+playwright-report/
+test-results/
+coverage/
+artifacts/
+
+# 大体积/临时
+*.tmp
+*.bak
+*.orig
+demo-*.webm
+*.wav.tmp
+
+# 但保留：空的子目录占位
+!*.gitkeep
