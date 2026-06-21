@@ -5,6 +5,7 @@
  * 把 onChunk / onTranscript / clear / sessionReset 都收敛到 dispatch。
  *
  * Author: Claude Opus 4.8
+ * Updated: 火山引擎分角色 — pushPartial/pushFinal 增加 speakerId 参数
  */
 import { useReducer, useCallback } from 'react';
 import {
@@ -17,8 +18,8 @@ import type { TranscriptionResult, SessionMetrics } from '../types';
 export interface UseTranscriptionReturn {
   state: TranscriptionState;
   /** 收到 partial result (服务端 partial 不带 words) */
-  pushPartial: (text: string, fullText: string) => void;
-  /** 收到 final result (服务端 final 带 words / fullText) */
+  pushPartial: (text: string, fullText: string, speakerId?: string | null) => void;
+  /** 收到 final result (服务端 final 带 words / fullText / speakers / utterances) */
   pushFinal: (result: TranscriptionResult) => void;
   /** 音频 chunk 累计 (来自 recorder hook) */
   recordAudioChunk: (byteLength: number) => void;
@@ -36,8 +37,8 @@ export const useTranscription = (): UseTranscriptionReturn => {
     initialTranscriptionState,
   );
 
-  const pushPartial = useCallback((text: string, fullText: string) => {
-    dispatch({ type: 'TRANSCRIPT_PARTIAL', text, fullText });
+  const pushPartial = useCallback((text: string, fullText: string, speakerId?: string | null) => {
+    dispatch({ type: 'TRANSCRIPT_PARTIAL', text, fullText, speakerId: speakerId ?? null });
   }, []);
 
   const pushFinal = useCallback((result: TranscriptionResult) => {

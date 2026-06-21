@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   transcriptionReducer,
   initialTranscriptionState,
+  getSpeakerColor,
   type TranscriptionState,
 } from '../state/transcriptionReducer';
 import type { TranscriptionResult, WordInfo } from '../types';
@@ -197,5 +198,130 @@ describe('transcriptionReducer / unknown action', () => {
     // @ts-expect-error testing unknown action
     const s1 = transcriptionReducer(s0, { type: 'NOPE' });
     expect(s1).toBe(s0);
+  });
+});
+
+// ----------------------------------------------------------------------------
+// 火山引擎分角色: getSpeakerColor
+// ----------------------------------------------------------------------------
+describe('getSpeakerColor', () => {
+  it('同一 id 永远返回同一颜色 (稳定 hash)', () => {
+    expect(getSpeakerColor('spk0')).toBe(getSpeakerColor('spk0'));
+    expect(getSpeakerColor('spk1')).toBe(getSpeakerColor('spk1'));
+  });
+
+  it('不同 id 大概率返回不同颜色', () => {
+    const colors = ['spk0', 'spk1', 'spk2', 'spk3', 'spk4', 'spk5', 'spk6', 'spk7'].map(getSpeakerColor);
+    const unique = new Set(colors);
+    expect(unique.size).toBeGreaterThanOrEqual(6); // 8 选 6+, 调色板 8 色保证够分
+  });
+});
+
+// ----------------------------------------------------------------------------
+// 火山引擎分角色: TRANSCRIPT_FINAL 合并 speakers
+// ----------------------------------------------------------------------------
+describe('transcriptionReducer / TRANSCRIPT_FINAL + speakers', () => {
+  it('新增 speaker 自动分配 color, 已存在的 label 更新', () => {
+    const s0: TranscriptionState = { ...initialTranscriptionState };
+    const s1 = transcriptionReducer(s0, {
+      type: 'TRANSCRIPT_FINAL',
+      result: buildResult({
+        text: '你好',
+        speaker_id: 'spk0',
+        speakers: [{ id: 'spk0', label: '发言人 1' }],
+      }),
+    });
+    expect(s1.speakers).toHaveLength(1);
+    expect(s1.speakers[0].id).toBe('spk0');
+    expect(s1.speakers[0].label).toBe('发言人 1');
+    expect(s1.speakers[0].color).toMatch(/^#[0-9a-fA-F]{6}$/);
+    expect(s1.currentSpeakerId).toBe('spk0');
+  });
+
+  it('后续 final 累积 speakers, 不重复', () => {
+    let s: TranscriptionState = { ...initialTranscriptionState };
+    s = transcriptionReducer(s, {
+      type: 'TRANSCRIPT_FINAL',
+      result: buildResult({
+        text: '你好',
+        speaker_id: 'spk0',
+        speakers: [{ id: 'spk0', label: '发言人 1' }],
+      }),
+    });
+    s = transcriptionReducer(s, {
+      type: 'TRANSCRIPT_FINAL',
+      result: buildResult({
+        text: '我是字节',
+        speaker_id: 'spk1',
+        speakers: [
+          { id: 'spk0', label: '发言人 1' },
+          { id: 'spk1', label: '发言人 2' },
+        ],
+      }),
+    });
+    expect(s.speakers).toHaveLength(2);
+    expect(s.speakers.map((x) => x.id)).toEqual(['spk0', 'spk1']);
+    // spk0 颜色应保持不变 (稳定 hash)
+    const spk0Color1 = s.speakers.find((x) => x.id === 'spk0')!.color;
+    expect(spk0Color1).toBe(getSpeakerColor('spk0'));
+    expect(s.currentSpeakerId).toBe('spk1');
+  });
+
+  it('utterances 累加到 currentUtterances', () => {
+    const s0: TranscriptionState = { ...initialTranscriptionState };
+    const s1 = transcriptionReducer(s0, {
+      type: 'TRANSCRIPT_FINAL',
+      result: buildResult({
+        text: '你好世界。我是字节。',
+        speaker_id: 'spk0',
+        utterances: [
+          {
+            text: '你好世界。', start_time: 0, end_time: 1500,
+            speaker_id: 'spk0', words: [],
+          },
+          {
+            text: '我是字节。', start_time: 1500, end_time: 3000,
+            speaker_id: 'spk1', words: [],
+          },
+        ],
+      }),
+    });
+    expect(s1.currentUtterances).toHaveLength(2);
+    expect(s1.currentUtterances[0].speaker_id).toBe('spk0');
+    expect(s1.currentUtterances[1].speaker_id).toBe('spk1');
+  });
+});
+
+// ----------------------------------------------------------------------------
+// TRANSCRIPT_PARTIAL + speakerId (火山引擎 partial 也带 speaker)
+// ----------------------------------------------------------------------------
+describe('transcriptionReducer / TRANSCRIPT_PARTIAL + speakerId', () => {
+  it('speakerId 更新 currentSpeakerId', () => {
+    const s0: TranscriptionState = {
+      ...initialTranscriptionState,
+      speakers: [{ id: 'spk0', label: '发言人 1', color: '#00d4ff' }],
+      currentSpeakerId: 'spk0',
+    };
+    const s1 = transcriptionReducer(s0, {
+      type: 'TRANSCRIPT_PARTIAL',
+      text: '你好',
+      fullText: '',
+      speakerId: 'spk1',
+    });
+    expect(s1.currentSpeakerId).toBe('spk1');
+  });
+
+  it('speakerId 缺省时, 保留上一次的 currentSpeakerId', () => {
+    const s0: TranscriptionState = {
+      ...initialTranscriptionState,
+      currentSpeakerId: 'spk0',
+    };
+    const s1 = transcriptionReducer(s0, {
+      type: 'TRANSCRIPT_PARTIAL',
+      text: 'p',
+      fullText: '',
+      // speakerId 不传 → undefined → 保留 spk0
+    });
+    expect(s1.currentSpeakerId).toBe('spk0');
   });
 });

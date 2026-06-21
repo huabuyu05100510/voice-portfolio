@@ -660,7 +660,7 @@ export class AudioVisualizer {
 // ============================================================================
 // React 组件包装
 // ============================================================================
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 export interface VisualizerPanelProps {
   /** 是否启用 AnalyserNode 直连 (需外部传入 MediaStream) */
@@ -672,6 +672,8 @@ export interface VisualizerPanelProps {
 }
 
 export const VisualizerPanel: React.FC<VisualizerPanelProps> = ({ stream, audioData, active }) => {
+  // Sprint 8: 默认折叠 — 录音时才展开 (active 变化触发)
+  const [expanded, setExpanded] = useState(false);
   const specRef = useRef<HTMLCanvasElement>(null);
   const pitchRef = useRef<HTMLCanvasElement>(null);
   const volRef = useRef<HTMLCanvasElement>(null);
@@ -680,6 +682,15 @@ export const VisualizerPanel: React.FC<VisualizerPanelProps> = ({ stream, audioD
   const volRO = useRef<HTMLSpanElement>(null);
   const fpsRO = useRef<HTMLSpanElement>(null);
   const visRef = useRef<AudioVisualizer | null>(null);
+
+  // 录音中自动展开, 停止后给用户 3s 时间看波形再收回
+  useEffect(() => {
+    if (active) setExpanded(true);
+    else {
+      const t = setTimeout(() => setExpanded(false), 3000);
+      return () => clearTimeout(t);
+    }
+  }, [active]);
 
   useEffect(() => {
     if (!specRef.current || !pitchRef.current || !volRef.current || !vadRef.current || !pitchRO.current || !volRO.current) return;
@@ -715,9 +726,25 @@ export const VisualizerPanel: React.FC<VisualizerPanelProps> = ({ stream, audioD
   }, [audioData]);
 
   return (
-    <section className="visualizer-panel" aria-label="多模态音频可视化">
-      <h3>🎛 多模态音频可视化</h3>
-      <div className="visualizer-grid">
+    <section
+      className="visualizer-panel"
+      data-state={expanded ? 'expanded' : 'collapsed'}
+      aria-label="多模态音频可视化"
+    >
+      <button
+        type="button"
+        className="visualizer-toggle"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        aria-controls="visualizer-body"
+      >
+        <h3>
+          <span className="viz-icon" aria-hidden="true">🎛</span>
+          多模态音频可视化
+        </h3>
+        <span className="viz-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+      </button>
+      <div id="visualizer-body" className="visualizer-grid" hidden={!expanded}>
         <div className="viz-tile">
           <div className="viz-tile-header">
             <span className="viz-label">频谱图</span>

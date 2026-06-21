@@ -19,10 +19,10 @@ pytestmark = pytest.mark.e2e
 
 
 def test_app_loads_and_shows_title(page, client_url):
-    """打开首页应看到标题 'Vosk 实时语音转写 Demo'"""
+    """打开首页应看到标题 '火山引擎 · 分角色实时转写'"""
     page.goto(client_url, wait_until='domcontentloaded', timeout=30000)
     # 标题存在
-    h1 = page.locator('h1', has_text='Vosk 实时语音转写 Demo')
+    h1 = page.locator('h1', has_text='火山引擎')
     h1.wait_for(state='visible', timeout=15000)
     assert h1.count() == 1
 

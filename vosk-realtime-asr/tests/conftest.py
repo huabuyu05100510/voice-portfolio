@@ -14,7 +14,8 @@ for p in (SERVER_DIR, TESTS_DIR):
         sys.path.insert(0, p)
 
 SERVER_URL = 'http://localhost:5000'
-PROM_URL = 'http://localhost:9092'
+# 火山引擎版: PROMETHEUS_PORT = 9091 (从 server/config.py 读 env)
+PROM_URL = 'http://localhost:9091'
 
 
 @pytest.fixture(scope='session')

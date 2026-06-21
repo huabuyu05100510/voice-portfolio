@@ -46,7 +46,7 @@ describe('WebSocketClient', () => {
     expect(c.getState()).toBe('connected');
   });
 
-  it('onTranscriptionResult 收到回调时被调用', () => {
+  it('onTranscriptionResult 收到回调时被调用 (含火山引擎分角色字段)', () => {
     const c = new WebSocketClient('http://localhost:5000');
     const cb = vi.fn();
     c.onTranscriptionResult(cb);
@@ -60,6 +60,9 @@ describe('WebSocketClient', () => {
       full_text: '你好',
       latency_ms: 123,
       timestamp: '2026-06-20T00:00:00Z',
+      speaker_id: 'spk0',
+      speakers: [{ id: 'spk0', label: '发言人 1' }],
+      utterances: [],
     });
     expect(cb).toHaveBeenCalledWith({
       text: '你好',
@@ -68,6 +71,9 @@ describe('WebSocketClient', () => {
       latency: 123,
       timestamp: '2026-06-20T00:00:00Z',
       words: [],
+      speaker_id: 'spk0',
+      speakers: [{ id: 'spk0', label: '发言人 1' }],
+      utterances: [],
     });
   });
 

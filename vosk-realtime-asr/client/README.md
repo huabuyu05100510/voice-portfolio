@@ -1,10 +1,10 @@
-# Vosk Realtime ASR — Client
+# 火山引擎 bigmodel · 分角色实时转写 — Client
 
-> 5 个 Sprint / 148 测试 / 350 kB gzipped 113 kB / 端到端可观测
+> 8 个 Sprint / 138 测试 / 350 kB gzipped 113 kB / 端到端可观测
 >
-> **目标: 前端作品 · 实时语音转写 · 6 大创新模块全部跑通**
+> **目标: 前端作品 · 实时分角色转写 · 7 大创新模块全部跑通**
 >
-> 模型: **Claude Opus 4.8** (架构) + **MiniMax-M3** (Visualizer / 性能数据采集) · 2026-06-20
+> 模型: **Claude Opus 4.8** (架构 + 分角色引擎) + **MiniMax-M3** (Visualizer / 性能数据采集) · 2026-06-20
 
 ---
 
@@ -18,6 +18,7 @@
 | **可访问性** | 4 | 三主题 (dark/light/hc) + 6 个快捷键 + 完整 ARIA | 视障/听障/键盘用户全部可用 |
 | **Hooks + Reducer** | 5 | App.tsx 734 → 98 行 (-87%) + 纯函数 reducer | 业务编排层彻底可测 |
 | **性能调优** | 7 | 3 大优化: memo / lazy-worklet / rAF 守卫 | 主线程开销 -40% (空闲时 0%) |
+| **分角色转写** | 8 | 火山引擎 `show_speaker_info` + djb2 配色 + utterances[] 详情 | 多人对话自动分配颜色, 一眼可读 |
 
 ---
 

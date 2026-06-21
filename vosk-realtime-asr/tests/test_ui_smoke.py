@@ -21,8 +21,10 @@ def test_vite_dev_server_responsive():
     """Vite dev server 200"""
     r = requests.get(VITE_URL, timeout=5)
     assert r.status_code == 200
-    assert '<div id="root">' in r.text
-    assert 'Vosk' in r.text
+    text = r.content.decode('utf-8')  # Vite 缺省 Content-Type charset
+    assert '<div id="root">' in text
+    # HTML 模板里写明新引擎 (React 渲染的 h1 在 JS bundle 里)
+    assert 'bigmodel' in text.lower() or '火山引擎' in text
 
 
 def test_vite_main_entry_loads():
@@ -45,9 +47,11 @@ def test_vite_app_tsx_compiles():
     """App.tsx 编译返回有效 JS"""
     r = requests.get(f'{VITE_URL}/src/App.tsx', timeout=5)
     assert r.status_code == 200
-    # Vite 把 tsx 编译成 js, 不应再出现 TS 语法
-    assert 'TranscriptionRenderer' in r.text
-    assert 'ObservabilityPanel' in r.text
+    text = r.content.decode('utf-8')
+    # Vite 把 tsx 编译成 js; 检查产物里有 AppLayout / speaker 相关 props
+    assert 'AppLayout' in text or 'AppShell' in text
+    # 火山引擎分角色: speakers / currentSpeakerId / utterances 透传
+    assert 'speakers' in text or 'currentSpeakerId' in text or 'volc' in text.lower()
 
 
 @pytest.mark.skipif(not os.path.exists(os.path.join(VITE_DIR, 'node_modules')), reason='node_modules not installed')

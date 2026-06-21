@@ -1,6 +1,16 @@
 /**
  * 全局样式
  *
+ * Sprint 9: Design System 2.0 — 重新设计
+ * 层次:
+ *   1) Design Tokens      颜色 / 字号 / 间距 / 圆角 / 阴影 / 动效曲线
+ *   2) Theme Overrides    dark / light / hc 三套
+ *   3) Base & Reset       body / * / scrollbar
+ *   4) Layout Primitives  app-shell / sidebar / hero / status-bar
+ *   5) Components         button / card / badge / chip / metric / speaker
+ *   6) Domain             transcript / visualizer / caption-bar
+ *   7) Utilities          sr-only / skip-link / reduced-motion
+ *
  * 主题系统 (CSS variables):
  *   [data-theme="dark"]  默认 — 深色背景
  *   [data-theme="light"] 浅色 — 高对比度文字
@@ -11,24 +21,152 @@
  */
 
 /* ============================================================================
-   默认 (dark) 主题 — 与原始深色配色保持一致
+   1) DESIGN TOKENS — Sprint 9
    ============================================================================ */
 :root,
 :root[data-theme="dark"] {
-  --primary-color: #00d4ff;
+  /* — Surface (画布层) — */
+  --bg-0: #0a0a14;          /* canvas */
+  --bg-1: #13131f;          /* surface (卡片) */
+  --bg-2: #1d1d2e;          /* elevated (浮层) */
+  --bg-3: #050510;          /* sunken (凹陷) */
+  --bg-overlay: rgba(10, 10, 20, 0.72);
+
+  /* — Border — */
+  --border-1: rgba(255, 255, 255, 0.08);
+  --border-2: rgba(255, 255, 255, 0.16);
+  --border-3: rgba(255, 255, 255, 0.28);
+
+  /* — Text — */
+  --text-1: #f5f5f7;        /* 最高对比 */
+  --text-2: #c5c5d0;        /* 正文 */
+  --text-3: #8b8b99;        /* 辅助 */
+  --text-4: #5a5a68;        /* 占位 / disabled */
+  --text-on-brand: #0a0a14;
+
+  /* — Brand (品牌) — */
+  --brand-50:  rgba(0, 212, 255, 0.08);
+  --brand-100: rgba(0, 212, 255, 0.16);
+  --brand-300: rgba(0, 212, 255, 0.48);
+  --brand-500: #00d4ff;
+  --brand-600: #00a8cc;
+  --brand-700: #007a99;
+
+  /* — Status (语义) — */
+  --success-500: #10b981;
+  --success-600: #059669;
+  --warning-500: #f59e0b;
+  --warning-600: #d97706;
+  --danger-500:  #ef4444;
+  --danger-600:  #dc2626;
+  --info-500:    #3b82f6;
+  --recording:   #ef4444;
+
+  /* — Speaker palette (说话人调色板) — */
+  --spk-1: #f97316;
+  --spk-2: #06b6d4;
+  --spk-3: #a855f7;
+  --spk-4: #10b981;
+  --spk-5: #f59e0b;
+  --spk-6: #ec4899;
+
+  /* — Type Scale (Major Third 1.25) — */
+  --font-display-2xl: 56px;
+  --font-display-xl:  40px;
+  --font-display-lg:  32px;
+  --font-heading-lg:  22px;
+  --font-heading-md:  18px;
+  --font-body-lg:     16px;
+  --font-body:        14px;
+  --font-body-sm:     13px;
+  --font-caption:     12px;
+  --font-micro:       11px;
+
+  --leading-tight:  1.15;
+  --leading-snug:   1.3;
+  --leading-normal: 1.5;
+  --leading-relaxed:1.7;
+
+  --tracking-tight:  -0.02em;
+  --tracking-normal: 0;
+  --tracking-wide:   0.04em;
+
+  /* — Spacing (4px base) — */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+
+  /* — Radius — */
+  --radius-xs:   4px;
+  --radius-sm:   6px;
+  --radius-md:   10px;
+  --radius-lg:   14px;
+  --radius-xl:   20px;
+  --radius-2xl:  28px;
+  --radius-pill: 9999px;
+
+  /* — Elevation — */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.18), 0 1px 3px rgba(0, 0, 0, 0.12);
+  --shadow-2: 0 4px 6px rgba(0, 0, 0, 0.16), 0 10px 15px rgba(0, 0, 0, 0.18);
+  --shadow-3: 0 10px 20px rgba(0, 0, 0, 0.22), 0 20px 40px rgba(0, 0, 0, 0.26);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --glow:    0 0 0 1px var(--brand-300), 0 0 24px rgba(0, 212, 255, 0.32);
+  --glow-danger: 0 0 0 1px var(--danger-500), 0 0 24px rgba(239, 68, 68, 0.32);
+
+  /* — Motion — */
+  --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in:    cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-inout: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration-fast:   120ms;
+  --duration-base:   200ms;
+  --duration-slow:   320ms;
+  --duration-slower: 480ms;
+
+  /* — Layout — */
+  --header-height: 56px;
+  --status-bar-height: 36px;
+  --sidebar-width: 296px;
+  --sidebar-width-collapsed: 0px;
+  --content-max-width: 1640px;
+
+  /* — 兼容旧 token (过渡期保留) — */
+  --primary-color: var(--brand-500);
   --secondary-color: #7c3aed;
-  --success-color: #10b981;
-  --warning-color: #f59e0b;
-  --error-color: #ef4444;
-  --background-dark: #0f0f1a;
-  --background-card: #1a1a2e;
-  --background-elevated: #252542;
-  --text-primary: #e0e0e0;
-  --text-secondary: #888888;
-  --border-color: #3a3a5e;
-  --focus-ring: #00d4ff;
-  --shadow-card: 0 4px 12px rgba(0, 0, 0, 0.3);
-  /* 字体相对大小 — 高对比度模式会放大 */
+  --success-color: var(--success-500);
+  --warning-color: var(--warning-500);
+  --error-color: var(--danger-500);
+  --background-dark: var(--bg-0);
+  --background-card: var(--bg-1);
+  --background-elevated: var(--bg-2);
+  --text-primary: var(--text-1);
+  --text-secondary: var(--text-2);
+  --border-color: var(--border-1);
+  --focus-ring: var(--brand-500);
+  --shadow-card: var(--shadow-2);
+
+  /* — 字体栈 (Sprint 8 emoji 修复) — */
+  --font-stack:
+    'Inter', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans SC', system-ui, -apple-system,
+    BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Apple Color Emoji', 'Segoe UI Emoji',
+    'Noto Color Emoji', 'Twemoji Mozilla', 'EmojiOne Color',
+    sans-serif;
+  --font-mono:
+    'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas,
+    'PingFang SC', 'Microsoft YaHei',
+    'Apple Color Emoji', 'Segoe UI Emoji', monospace;
+  --font-numeric:
+    'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, monospace;
   --font-scale: 1;
 }
 
@@ -101,72 +239,156 @@
   min-height: 100vh;
   background: var(--background-dark);
   color: var(--text-primary);
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--font-stack);
+  font-feature-settings: 'tnum' 1, 'kern' 1, 'ss01' 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   /* 主题切换平滑过渡 */
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 /* ============================================================================
-   头部
+   头部 — Sprint 9 兼容 (旧选择器仍可用)
    ============================================================================ */
 .app-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 20px 30px;
-  background: var(--background-card);
-  border-bottom: 1px solid var(--border-color);
+  gap: var(--space-3);
+}
+
+.app-header-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.app-header-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--brand-50);
+  font-size: var(--font-body-lg);
+  flex-shrink: 0;
 }
 
 .app-header h1 {
-  font-size: calc(24px * var(--font-scale, 1));
-  font-weight: 600;
+  font-family: var(--font-stack);
+  font-size: var(--font-heading-md);
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: linear-gradient(135deg, var(--text-1) 0%, var(--brand-500) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
-.connection-status {
-  display: flex;
+:root[data-theme="hc"] .app-header h1 {
+  background: none;
+  -webkit-text-fill-color: var(--text-1);
+  color: var(--text-1);
+}
+
+.app-header-status {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: var(--bg-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-caption);
+  color: var(--text-2);
 }
 
 .status-indicator {
-  width: 12px;
-  height: 12px;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  animation: pulse 2s infinite;
+  background: var(--text-3);
 }
 
-.status-indicator.connected {
-  background: var(--success-color);
+.status-indicator[data-state="connected"] {
+  background: var(--success-500);
+  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+  animation: pulse-status 2s var(--ease-inout) infinite;
 }
 
-.status-indicator.disconnected {
-  background: var(--error-color);
+.status-indicator[data-state="ready"] { background: var(--success-500); }
+.status-indicator[data-state="disconnected"] { background: var(--danger-500); }
+.status-indicator[data-state="connecting"] {
+  background: var(--warning-500);
+  animation: pulse-status 1s infinite;
+}
+.status-indicator[data-state="error"] { background: var(--danger-500); }
+
+@keyframes pulse-status {
+  0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+  50%      { box-shadow: 0 0 0 6px transparent; opacity: 0.5; }
 }
 
-.status-indicator.connecting {
-  background: var(--warning-color);
-}
+/* Legacy class-based status indicator (兼容旧组件) */
+.status-indicator.connected { background: var(--success-500); }
+.status-indicator.disconnected { background: var(--danger-500); }
+.status-indicator.connecting { background: var(--warning-500); }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+.connection-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 /* ============================================================================
-   主内容区
+   主内容区 — Sprint 8 重构
+   1) 三栏 minmax 约束 (防内容塌陷到 0)
+   2) max-width 1640px 收口, 大屏不显空旷
+   3) 1280px / 768px 双断点
    ============================================================================ */
 .app-main {
   display: grid;
-  grid-template-columns: 1fr 2fr 1fr;
-  gap: 20px;
-  padding: 20px 30px;
+  grid-template-columns:
+    minmax(280px, 320px)
+    minmax(560px, 1fr)
+    minmax(300px, 360px);
+  gap: 20px 24px;
+  padding: 24px 32px;
+  max-width: 1640px;
+  width: 100%;
+  margin: 0 auto;
   flex: 1;
+}
+
+@media (max-width: 1280px) {
+  .app-main {
+    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  }
+  /* observability-section 占满底部一整行 */
+  .observability-section {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 1024px) {
   .app-main {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .app-main {
+    grid-template-columns: 1fr;
+    padding: 16px;
+    gap: 14px;
   }
 }
 
@@ -404,10 +626,146 @@
   font-size: 12px;
 }
 
+/* 火山引擎分角色 — 说话人徽章 */
+.result-speaker {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.utterance-details {
+  font-family: var(--font-mono);
+  font-feature-settings: 'tnum' 1;
+}
+
+/* ============================================================================
+   空状态 — Sprint 8 升级
+   渲染: 中心 SVG 微光 + 主标题 + 副标题 + 快捷键提示
+   ============================================================================ */
 .empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   text-align: center;
-  padding: 40px;
+  padding: 56px 24px 64px;
   color: var(--text-secondary);
+  gap: 16px;
+  /* 渐变微光背景, 让空态有节奏 */
+  background:
+    radial-gradient(ellipse at 50% 30%,
+      rgba(0, 212, 255, 0.06) 0%,
+      transparent 60%),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0px,
+      transparent 24px,
+      rgba(255, 255, 255, 0.015) 24px,
+      rgba(255, 255, 255, 0.015) 25px
+    );
+  border-radius: 12px;
+  border: 1px dashed var(--border-color);
+  margin-top: 8px;
+}
+
+.empty-orbit {
+  width: 96px;
+  height: 96px;
+  opacity: 0.5;
+  color: var(--primary-color);
+  filter: drop-shadow(0 0 12px rgba(0, 212, 255, 0.25));
+}
+
+.empty-orbit .orbit-ring {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 6;
+  animation: orbit-spin 16s linear infinite;
+  transform-origin: 60px 60px;
+}
+
+.empty-orbit .orbit-ring-2 {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+  animation: orbit-spin 24s linear infinite reverse;
+  transform-origin: 60px 60px;
+  opacity: 0.6;
+}
+
+.empty-orbit .orbit-core {
+  fill: currentColor;
+  animation: pulse-core 1.8s ease-in-out infinite;
+  transform-origin: 60px 60px;
+}
+
+.empty-orbit .orbit-dot {
+  fill: currentColor;
+  animation: orbit-dot 4s linear infinite;
+  transform-origin: 60px 60px;
+}
+
+@keyframes orbit-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-core {
+  0%, 100% { opacity: 0.9; r: 6; }
+  50%      { opacity: 0.4; r: 9; }
+}
+
+@keyframes orbit-dot {
+  0%   { transform: rotate(0deg) translateX(0) rotate(0deg); }
+  100% { transform: rotate(360deg) translateX(0) rotate(-360deg); }
+}
+
+.empty-hint {
+  font-size: calc(16px * var(--font-scale, 1));
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+.empty-hint kbd {
+  display: inline-block;
+  padding: 2px 8px;
+  margin: 0 4px;
+  background: var(--background-elevated, var(--background-card));
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--primary-color);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset;
+}
+
+.empty-sub {
+  font-size: calc(13px * var(--font-scale, 1));
+  color: var(--text-secondary);
+  line-height: 1.6;
+  max-width: 360px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .empty-orbit .orbit-ring,
+  .empty-orbit .orbit-ring-2,
+  .empty-orbit .orbit-core,
+  .empty-orbit .orbit-dot {
+    animation: none;
+  }
+}
+
+:root[data-theme="light"] .empty-state {
+  background:
+    radial-gradient(ellipse at 50% 30%,
+      rgba(0, 102, 204, 0.04) 0%,
+      transparent 60%);
 }
 
 .full-text-summary {
@@ -759,7 +1117,7 @@
   background: var(--background-elevated, var(--background-dark));
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-primary);
   min-width: 24px;
@@ -807,9 +1165,893 @@
   top: 8px;
 }
 
+/* ============================================================================
+   Sprint 8 — Visualizer 折叠 (默认收起, 录音时展开)
+   ============================================================================ */
+.visualizer-panel {
+  background: var(--background-card);
+  border-radius: 12px;
+  padding: 12px 20px;
+  margin: 0 32px 24px;
+  max-width: 1576px;
+  width: calc(100% - 64px);
+  transition: padding 0.2s ease, max-height 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.visualizer-panel[data-state="collapsed"] {
+  padding: 10px 20px;
+  max-height: 56px;
+}
+
+.visualizer-panel[data-state="expanded"] {
+  max-height: 560px;
+  padding: 18px 20px 20px;
+}
+
+.visualizer-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font-family: inherit;
+}
+
+.visualizer-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 4px;
+  border-radius: 6px;
+}
+
+.visualizer-toggle h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: calc(14px * var(--font-scale, 1));
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.visualizer-toggle .viz-icon {
+  font-size: 16px;
+}
+
+.visualizer-toggle .viz-chevron {
+  color: var(--text-secondary);
+  font-size: 12px;
+  transition: transform 0.2s ease;
+}
+
+.visualizer-panel[data-state="collapsed"] .visualizer-grid {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .visualizer-panel { margin: 0 16px 16px; width: calc(100% - 32px); }
+}
+
+/* ============================================================================
+   Sprint 8 — VAD 标签防断行
+   ============================================================================ */
+.vad-legend {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+
+.vad-legend > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
+.vad-legend .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.vad-legend .dot-green { background: var(--success-color); }
+.vad-legend .dot-gray  { background: var(--text-secondary); }
+
+/* ============================================================================
+   Sprint 8 — 转写区域 polish
+   ============================================================================ */
+.transcription-section {
+  background:
+    linear-gradient(180deg,
+      rgba(0, 212, 255, 0.025) 0%,
+      transparent 80%),
+    var(--background-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 22px 22px 18px;
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+}
+
+.transcription-section h3 {
+  font-family: var(--font-stack);
+  font-size: calc(15px * var(--font-scale, 1));
+  font-weight: 700;
+  margin: 0 0 14px;
+  letter-spacing: -0.005em;
+  color: var(--text-primary);
+}
+
+.transcription-actions {
+  margin-top: auto;
+  padding-top: 12px;
+  display: flex;
+  gap: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+@media (max-width: 768px) {
+  .transcription-section { padding: 16px; min-height: 320px; }
+}
+
 /* 高对比度: 强化边框 */
 :root[data-theme="hc"] .btn,
 :root[data-theme="hc"] .theme-option,
 :root[data-theme="hc"] .monitor-link {
   border: 2px solid currentColor;
+}
+
+/* ============================================================================
+   Sprint 9 — Workbench Layout (.app-shell)
+   =====================================================================
+   ┌─ Header (56px) ────────────────────────────────────────────┐
+   ├─ Sidebar ─┬─ Hero (live transcript) ─────────────────────┤
+   │  控制     │                                              │
+   │  说话人   │                                              │
+   │  监控     │                                              │
+   │  可视化   │                                              │
+   ├───────────┴──────────────────────────────────────────────┤
+   └─ Status Bar (36px) ───────────────────────────────────────┘
+   ============================================================================ */
+.app-shell {
+  display: grid;
+  grid-template-rows: var(--header-height) 1fr var(--status-bar-height);
+  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-areas:
+    "header header"
+    "sidebar hero"
+    "status  status";
+  min-height: 100vh;
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-family: var(--font-stack);
+  font-size: var(--font-body);
+  font-feature-settings: 'tnum' 1, 'kern' 1, 'ss01' 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  transition: background-color var(--duration-base) var(--ease-out),
+              color var(--duration-base) var(--ease-out);
+}
+
+.app-shell .app-header {
+  grid-area: header;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 0 var(--space-6);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border-1);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(12px);
+}
+
+.app-shell .app-header h1 {
+  font-size: var(--font-heading-md);
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+  margin: 0;
+  flex: 1;
+  background: linear-gradient(135deg, var(--text-1) 0%, var(--brand-500) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+:root[data-theme="hc"] .app-shell .app-header h1 {
+  background: none;
+  -webkit-text-fill-color: var(--text-1);
+  color: var(--text-1);
+}
+
+.app-shell .app-sidebar {
+  grid-area: sidebar;
+  background: var(--bg-1);
+  border-right: 1px solid var(--border-1);
+  padding: var(--space-4);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.app-shell .app-hero {
+  grid-area: hero;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.app-shell .app-statusbar {
+  grid-area: status;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 0 var(--space-6);
+  background: var(--bg-1);
+  border-top: 1px solid var(--border-1);
+  font-size: var(--font-caption);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+
+@media (max-width: 1024px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "header"
+      "hero"
+      "status";
+  }
+  .app-shell .app-sidebar { display: none; }
+}
+
+/* ============================================================================
+   Sprint 9 — Sidebar Section
+   ============================================================================ */
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sidebar-section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-micro);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: 0 var(--space-2);
+  margin: 0 0 var(--space-1);
+}
+
+.sidebar-section-title .emoji {
+  font-size: var(--font-body);
+  line-height: 1;
+}
+
+/* ============================================================================
+   Sprint 9 — Recording Control (主 CTA)
+   ============================================================================ */
+.recording-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.record-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-md);
+  font-family: var(--font-stack);
+  font-size: var(--font-body-lg);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-base) var(--ease-out);
+}
+
+.record-btn:hover:not(:disabled) {
+  background: var(--bg-3);
+  border-color: var(--border-3);
+}
+
+.record-btn:focus-visible {
+  box-shadow: var(--glow);
+}
+
+.record-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.record-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.record-btn .record-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  background: var(--danger-500);
+  flex-shrink: 0;
+  transition: all var(--duration-base) var(--ease-spring);
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+}
+
+.record-btn[data-state="idle"] .record-icon {
+  /* 默认状态: 红色实心圆 */
+  width: 14px;
+  height: 14px;
+}
+
+.record-btn[data-state="recording"] {
+  background: var(--danger-500);
+  border-color: var(--danger-600);
+  color: var(--text-on-brand);
+}
+
+.record-btn[data-state="recording"] .record-icon {
+  /* 录音中: 方块 */
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-xs);
+  background: #fff;
+  animation: record-pulse 1s var(--ease-out) infinite;
+}
+
+.record-btn[data-state="ready"] .record-icon {
+  background: var(--success-500);
+  animation: record-ready-glow 2.4s var(--ease-out) infinite;
+}
+
+@keyframes record-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.5); }
+  50%      { box-shadow: 0 0 0 8px rgba(255, 255, 255, 0); }
+}
+
+@keyframes record-ready-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); }
+  50%      { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+}
+
+/* Secondary action buttons (sample / clear) */
+.action-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-stack);
+  font-size: var(--font-body-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.action-btn:hover:not(:disabled) {
+  background: var(--bg-2);
+  border-color: var(--border-2);
+  color: var(--text-1);
+}
+
+.action-btn:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 2px;
+}
+
+.action-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ============================================================================
+   Sprint 9 — Speaker List
+   ============================================================================ */
+.speaker-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.speaker-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-md);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.speaker-card[data-active="true"] {
+  background: var(--brand-50);
+  border-color: var(--brand-300);
+}
+
+.speaker-card .speaker-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-pill);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: var(--font-body);
+  color: var(--text-on-brand);
+  flex-shrink: 0;
+  font-family: var(--font-numeric);
+}
+
+.speaker-card .speaker-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.speaker-card .speaker-name {
+  font-size: var(--font-body);
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.speaker-card .speaker-meta {
+  font-size: var(--font-micro);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+
+.speaker-card .speaker-wave {
+  width: 56px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.speaker-empty {
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-4);
+  font-size: var(--font-body-sm);
+  font-style: italic;
+}
+
+/* ============================================================================
+   Sprint 9 — Metric Tile (sidebar 内嵌)
+   ============================================================================ */
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-2);
+}
+
+.metric-tile {
+  position: relative;
+  padding: var(--space-3);
+  background: var(--bg-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.metric-tile::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--brand-500), transparent);
+}
+
+.metric-tile[data-variant="success"]::before {
+  background: linear-gradient(90deg, var(--success-500), transparent);
+}
+
+.metric-tile[data-variant="warning"]::before {
+  background: linear-gradient(90deg, var(--warning-500), transparent);
+}
+
+.metric-tile[data-variant="danger"]::before {
+  background: linear-gradient(90deg, var(--danger-500), transparent);
+}
+
+.metric-tile .metric-label {
+  font-size: var(--font-micro);
+  color: var(--text-3);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  margin: 0 0 var(--space-1);
+  font-weight: 600;
+}
+
+.metric-tile .metric-value {
+  font-size: var(--font-heading-md);
+  font-weight: 700;
+  font-family: var(--font-numeric);
+  color: var(--text-1);
+  line-height: var(--leading-tight);
+}
+
+.metric-tile .metric-trend {
+  margin-top: var(--space-2);
+  height: 18px;
+  width: 100%;
+}
+
+/* ============================================================================
+   Sprint 9 — Hero Transcript Area (主工作区)
+   ============================================================================ */
+.transcript-hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow-y: auto;
+  padding: var(--space-8) var(--space-10) var(--space-16);
+  scroll-behavior: smooth;
+}
+
+.transcript-hero-headline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-8);
+}
+
+.transcript-hero-headline .hero-eyebrow {
+  font-size: var(--font-micro);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--brand-500);
+  font-weight: 600;
+}
+
+.transcript-hero-headline .hero-title {
+  font-size: var(--font-display-2xl);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  font-weight: 800;
+  color: var(--text-1);
+  margin: 0;
+  background: linear-gradient(180deg, var(--text-1) 0%, var(--text-3) 120%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.transcript-hero-headline .hero-subtitle {
+  font-size: var(--font-body-lg);
+  color: var(--text-3);
+  margin: 0;
+}
+
+.transcript-stream {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 880px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* Sprint 9 — Transcript Item 重设计 */
+.transcript-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+  background: var(--bg-1);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-lg);
+  position: relative;
+  transition:
+    background-color var(--duration-base) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out);
+}
+
+.transcript-item[data-active="true"] {
+  background: var(--bg-2);
+  border-color: var(--border-2);
+  box-shadow: var(--shadow-1);
+}
+
+.transcript-item[data-speaker]::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: var(--space-4);
+  bottom: var(--space-4);
+  width: 3px;
+  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+  background: var(--speaker-color, var(--brand-500));
+}
+
+.transcript-item-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.transcript-item-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-caption);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+
+.transcript-item-text {
+  font-size: var(--font-heading-lg);
+  line-height: var(--leading-relaxed);
+  color: var(--text-1);
+  letter-spacing: var(--tracking-normal);
+  word-break: break-word;
+}
+
+.transcript-item[data-state="partial"] .transcript-item-text {
+  color: var(--text-2);
+  font-style: italic;
+}
+
+.transcript-item[data-state="partial"]::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: var(--space-1);
+  background: var(--brand-500);
+  border-radius: var(--radius-pill);
+  animation: pulse-soft 1.2s var(--ease-inout) infinite;
+  vertical-align: middle;
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 1; }
+}
+
+/* ============================================================================
+   Sprint 9 — Caption Bar (底部浮动字幕)
+   ============================================================================ */
+.caption-bar {
+  position: sticky;
+  bottom: var(--space-4);
+  margin: 0 auto;
+  width: min(960px, calc(100% - var(--space-8)));
+  padding: var(--space-3) var(--space-6);
+  background: var(--bg-overlay);
+  backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-pill);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--font-body-lg);
+  color: var(--text-1);
+  box-shadow: var(--shadow-3);
+  z-index: 5;
+  pointer-events: none;
+  transition:
+    transform var(--duration-slow) var(--ease-spring),
+    opacity var(--duration-base) var(--ease-out);
+}
+
+.caption-bar[data-empty="true"] {
+  opacity: 0.5;
+}
+
+.caption-bar .caption-speaker {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  background: var(--brand-100);
+  color: var(--brand-500);
+  border: 1px solid var(--brand-300);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-caption);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.caption-bar .caption-text {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ============================================================================
+   Sprint 9 — Status Bar (底部)
+   ============================================================================ */
+.statusbar-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.statusbar-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--text-3);
+}
+
+.statusbar-dot[data-state="connected"] { background: var(--success-500); box-shadow: 0 0 6px var(--success-500); }
+.statusbar-dot[data-state="connecting"] { background: var(--warning-500); }
+.statusbar-dot[data-state="disconnected"] { background: var(--danger-500); }
+.statusbar-dot[data-state="recording"] { background: var(--danger-500); animation: pulse-soft 1s infinite; }
+
+.statusbar-spacer { flex: 1; }
+
+.statusbar-key {
+  padding: 1px var(--space-2);
+  background: var(--bg-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: var(--font-micro);
+}
+
+/* ============================================================================
+   Sprint 9 — reduced motion 兼容
+   ============================================================================ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0.01ms;
+    --duration-base: 0.01ms;
+    --duration-slow: 0.01ms;
+  }
+}
+
+/* ============================================================================
+   Sprint 9 — Debug Drawer (可折叠调试抽屉)
+   ============================================================================ */
+.debug-drawer {
+  position: fixed;
+  bottom: calc(var(--status-bar-height) + var(--space-4));
+  right: var(--space-4);
+  z-index: 50;
+  background: var(--bg-overlay);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-3);
+  font-family: var(--font-mono);
+  font-size: var(--font-caption);
+  min-width: 280px;
+  max-width: 480px;
+  overflow: hidden;
+  transition: max-height var(--duration-base) var(--ease-out);
+}
+
+.debug-drawer[data-open="false"] { max-height: 44px; }
+.debug-drawer[data-open="true"]  { max-height: 320px; }
+
+.debug-drawer-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.debug-drawer-toggle:hover {
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+
+.debug-drawer-toggle .emoji {
+  font-size: var(--font-body);
+}
+
+.debug-drawer-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  padding: 0 var(--space-2);
+  background: var(--brand-100);
+  color: var(--brand-500);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-micro);
+  font-weight: 700;
+  margin-left: auto;
+}
+
+.debug-drawer-chevron {
+  color: var(--text-3);
+  font-size: 10px;
+}
+
+.debug-drawer-body {
+  max-height: 280px;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.debug-entry {
+  display: grid;
+  grid-template-columns: 70px 80px 1fr;
+  gap: var(--space-2);
+  padding: 2px 0;
+  font-size: var(--font-micro);
+  line-height: var(--leading-snug);
+}
+
+.debug-ts { color: var(--text-4); }
+.debug-step { color: var(--warning-500); font-weight: 600; }
+.debug-detail { color: var(--text-2); word-break: break-all; }
+
+.debug-entry.debug-transcript .debug-step { color: var(--success-500); }
+.debug-entry.debug-error .debug-step,
+.debug-entry.debug-error .debug-detail { color: var(--danger-500); }
+
+.debug-empty {
+  color: var(--text-4);
+  text-align: center;
+  padding: var(--space-4);
+  font-style: italic;
 }

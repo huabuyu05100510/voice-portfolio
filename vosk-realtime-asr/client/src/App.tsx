@@ -34,8 +34,14 @@ export const App = () => {
 
   useEffect(() => {
     ws.onTranscription((r: TranscriptionResult) => {
-      if (r.isFinal) tr.pushFinal(r); else tr.pushPartial(r.text, r.fullText ?? '');
-      dbg.push('TRANSCRIPT', `${r.isFinal ? 'FINAL' : 'PART '} ${JSON.stringify(r.text)}${r.isFinal && r.words ? ` (${r.words.length}词)` : ''}`);
+      if (r.isFinal) {
+        tr.pushFinal(r);
+      } else {
+        tr.pushPartial(r.text, r.fullText ?? '', r.speaker_id ?? null);
+      }
+      dbg.push('TRANSCRIPT', `${r.isFinal ? 'FINAL' : 'PART '} ${JSON.stringify(r.text)}${
+        r.isFinal && r.words ? ` (${r.words.length}词)` : ''
+      }${r.speaker_id ? ` [${r.speaker_id}]` : ''}${r.speakers && r.speakers.length ? ` (${r.speakers.length}人)` : ''}`);
       setStatus('transcribing');
     });
     ws.onLatency((ms) => perfHandleRef.current?.recordLatency(ms));
@@ -99,12 +105,13 @@ export const App = () => {
       status={status} wsState={ws.wsState} sessionId={ws.sessionId} error={ws.error}
       results={t.results} currentText={t.currentText} fullText={t.fullText}
       words={t.words} finalStartTime={t.finalStartTime} metrics={t.metrics}
+      speakers={t.speakers} currentSpeakerId={t.currentSpeakerId}
+      utterances={t.currentUtterances}
       mediaStream={recorder.mediaStream} latestAudio={recorder.latestAudio}
       bindWaveformCanvas={recorder.bindWaveformCanvas} debugLog={dbg.log}
       onStart={startRecording} onStop={stopRecording}
       onPlaySample={playSample} onClear={clearTranscription}
       onCopy={() => navigator.clipboard.writeText(t.fullText)}
-      perfHandleRef={perfHandleRef}
     />
   );
 };

@@ -1,56 +1,61 @@
 /**
- * AppLayout — 纯展示组件, 接收 App 的所有派生状态, 渲染骨架
- * Author: Claude Opus 4.8
+ * AppLayout — Sprint 9 Workbench 布局
  *
- * Sprint 7 性能优化: 用 React.memo 包裹, 仅当 props 浅比较变化才重渲染
- * (App 每秒 4 次 ws partial, 但 ControlPanel 的 wsState / sessionId 不会变化)
+ * ┌─ Header ────────────────────────────────────────────┐
+ * ├─ Sidebar ─┬─ Hero (live transcript) ────────────────┤
+ * │  控制     │                                          │
+ * │  说话人   │                                          │
+ * │  监控     │                                          │
+ * │  可视化   │                                          │
+ * ├───────────┴──────────────────────────────────────────┤
+ * └─ Status Bar ────────────────────────────────────────┘
+ *
+ * Author: Claude Opus 4.8
  */
 import React from 'react';
-import type { AppStatus, WebSocketState, SessionMetrics, TranscriptionResult, WordInfo } from './types';
+import type {
+  AppStatus,
+  WebSocketState,
+  SessionMetrics,
+  TranscriptionResult,
+  WordInfo,
+  Speaker,
+  Utterance,
+} from './types';
 import { AppHeader } from './AppHeader';
-import { ControlPanel } from './ControlPanel';
-import { TranscriptionRenderer } from './TranscriptionRenderer';
-import { ObservabilityPanel } from './ObservabilityPanel';
-import { VisualizerPanel } from './Visualizer';
+import { Sidebar } from './components/Sidebar';
+import { TranscriptHero } from './components/TranscriptHero';
+import { StatusBar } from './components/StatusBar';
+import { CaptionBar } from './components/CaptionBar';
 import { Subtitle } from './Subtitle';
 import { DebugPanel } from './DebugPanel';
 import type { DebugEntry } from './hooks/useDebugLog';
-import { PerfMonitor, PerfMonitorHandle } from './PerfMonitor';
 
 export interface AppLayoutProps {
-  // 状态机
   status: AppStatus;
   wsState: WebSocketState;
   sessionId: string | null;
   error: string | null;
-  // 转写
   results: TranscriptionResult[];
   currentText: string;
   fullText: string;
   words: WordInfo[];
   finalStartTime: number;
   metrics: SessionMetrics;
-  // 录音
+  speakers: Speaker[];
+  currentSpeakerId: string | null;
+  utterances: Utterance[];
   mediaStream: MediaStream | null;
   latestAudio: Int16Array | null;
   bindWaveformCanvas: (el: HTMLCanvasElement | null) => void;
-  // 日志
   debugLog: DebugEntry[];
-  // 回调
   onStart: () => void;
   onStop: () => void;
   onPlaySample: () => void;
   onClear: () => void;
   onCopy: () => void;
-  // PerfMonitor handle
-  perfHandleRef: React.MutableRefObject<PerfMonitorHandle | null>;
 }
 
-/**
- * 自定义比较函数: 转写数据频繁更新 (每 partial 一次),
- * 但只要核心 props (status / wsState / callbacks) 没变, 就跳过重渲染。
- * 当前已挂载的 TranscriptionRenderer / Subtitle 自身有 memo, 可以信赖。
- */
 function areAppLayoutPropsEqual(prev: AppLayoutProps, next: AppLayoutProps): boolean {
   return (
     prev.status === next.status &&
@@ -63,6 +68,9 @@ function areAppLayoutPropsEqual(prev: AppLayoutProps, next: AppLayoutProps): boo
     prev.words === next.words &&
     prev.finalStartTime === next.finalStartTime &&
     prev.metrics === next.metrics &&
+    prev.speakers === next.speakers &&
+    prev.currentSpeakerId === next.currentSpeakerId &&
+    prev.utterances === next.utterances &&
     prev.mediaStream === next.mediaStream &&
     prev.latestAudio === next.latestAudio &&
     prev.bindWaveformCanvas === next.bindWaveformCanvas &&
@@ -71,49 +79,69 @@ function areAppLayoutPropsEqual(prev: AppLayoutProps, next: AppLayoutProps): boo
     prev.onStop === next.onStop &&
     prev.onPlaySample === next.onPlaySample &&
     prev.onClear === next.onClear &&
-    prev.onCopy === next.onCopy &&
-    prev.perfHandleRef === next.perfHandleRef
+    prev.onCopy === next.onCopy
   );
 }
 
 export const AppLayout: React.FC<AppLayoutProps> = React.memo((p) => {
   const isRecording = p.status === 'recording' || p.status === 'transcribing';
+  const currentSpeaker = p.currentSpeakerId
+    ? p.speakers.find((s) => s.id === p.currentSpeakerId) ?? null
+    : null;
   return (
-    <div className="app-container">
+    <div className="app-shell">
       <a href="#main-content" className="skip-link">跳到主要内容</a>
-      <AppHeader wsState={p.wsState} />
-      <main id="main-content" className="app-main" role="main">
-        <ControlPanel
-          status={p.status} wsState={p.wsState} sessionId={p.sessionId}
-          hasResults={p.results.length > 0}
-          bindWaveformCanvas={p.bindWaveformCanvas}
-          onStart={p.onStart} onStop={p.onStop}
-          onPlaySample={p.onPlaySample} onClear={p.onClear} />
-        <section className="transcription-section" aria-label="转写结果区">
-          <h3>📝 转写结果</h3>
-          <TranscriptionRenderer results={p.results} currentText={p.currentText} fullText={p.fullText} />
-          <div className="transcription-actions">
-            <button onClick={p.onCopy} disabled={!p.fullText}
-              className="btn btn-copy" aria-label="复制全文到剪贴板">📋 复制全文</button>
-          </div>
-        </section>
-        <section className="observability-section">
-          <h3>📈 监控面板</h3>
-          <ObservabilityPanel status={p.status} metrics={p.metrics} wsState={p.wsState} sessionId={p.sessionId} />
-        </section>
+      <AppHeader wsState={p.wsState} status={p.status} />
+      <Sidebar
+        status={p.status}
+        wsState={p.wsState}
+        sessionId={p.sessionId}
+        hasResults={p.results.length > 0}
+        speakers={p.speakers}
+        currentSpeakerId={p.currentSpeakerId}
+        metrics={p.metrics}
+        mediaStream={p.mediaStream}
+        latestAudio={p.latestAudio}
+        bindWaveformCanvas={p.bindWaveformCanvas}
+        onStart={p.onStart}
+        onStop={p.onStop}
+        onPlaySample={p.onPlaySample}
+        onClear={p.onClear}
+      />
+      <main className="app-hero" id="main-content" role="main">
+        <TranscriptHero
+          results={p.results}
+          currentText={p.currentText}
+          fullText={p.fullText}
+          speakers={p.speakers}
+          onCopy={p.onCopy}
+          canCopy={!!p.fullText}
+        />
+        <CaptionBar
+          currentText={p.currentText}
+          fullText={p.fullText}
+          currentSpeaker={currentSpeaker}
+          isRecording={isRecording}
+        />
       </main>
-      <div style={{ padding: '0 30px 20px' }}>
-        <VisualizerPanel stream={p.mediaStream} audioData={p.latestAudio} active={isRecording} />
-      </div>
-      <Subtitle currentText={p.currentText} fullText={p.fullText} words={p.words}
-        finalStartTime={p.finalStartTime} isRecording={isRecording} />
+      <StatusBar
+        wsState={p.wsState}
+        status={p.status}
+        sessionId={p.sessionId}
+        metrics={p.metrics}
+      />
+      {/* 旧 Subtitle (兼容) — 已被 CaptionBar 取代, 但保留以便词级高亮动画 */}
+      <Subtitle
+        currentText={p.currentText}
+        fullText={p.fullText}
+        words={p.words}
+        finalStartTime={p.finalStartTime}
+        isRecording={isRecording}
+        currentSpeaker={currentSpeaker}
+        size="small"
+      />
       <DebugPanel entries={p.debugLog} />
       {p.error && <div className="error-banner">❌ {p.error}<button>✕</button></div>}
-      <footer className="app-footer">
-        <span>Vosk 中文模型 | 开源免费</span>
-        <span>Prometheus 监控端口: 9091</span>
-      </footer>
-      <PerfMonitor onHandle={(h) => { p.perfHandleRef.current = h; }} defaultOpen={false} />
     </div>
   );
 }, areAppLayoutPropsEqual);

@@ -95,6 +95,10 @@ export class WebSocketClient {
           latency: data.latency_ms || 0,
           timestamp: data.timestamp || '',
           words: data.words || [],
+          // 火山引擎分角色 — 新增透传
+          speaker_id: data.speaker_id,
+          speakers: data.speakers || [],
+          utterances: data.utterances || [],
         });
       }
     });
