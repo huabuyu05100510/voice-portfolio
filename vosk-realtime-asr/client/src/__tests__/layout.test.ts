@@ -15,12 +15,20 @@ describe('Sprint 8 布局', () => {
     expect(css).toMatch(/\.app-main[\s\S]*?grid-template-columns:\s*minmax/);
   });
 
-  it('.app-main 有 1280px 断点 (两栏)', () => {
-    expect(css).toMatch(/@media\s*\(max-width:\s*1280px\)[\s\S]*?\.app-main/);
+  it('.app-main 有 1440px 断点 (两栏) — Sprint 12 升级', () => {
+    expect(css).toMatch(/@media\s*\(max-width:\s*1440px\)[\s\S]*?\.app-main/);
   });
 
-  it('.app-main 有 768px 断点 (单栏)', () => {
+  it('.app-main 有 1024px 断点 (单栏)', () => {
+    expect(css).toMatch(/@media\s*\(max-width:\s*1024px\)[\s\S]*?\.app-main/);
+  });
+
+  it('.app-main 有 768px 断点 (单栏 + 紧凑)', () => {
     expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.app-main/);
+  });
+
+  it('.app-main 有 480px 移动断点 (Sprint 12 新增)', () => {
+    expect(css).toMatch(/@media\s*\(max-width:\s*480px\)[\s\S]*?\.app-main/);
   });
 
   it('.visualizer-panel 支持折叠 (data-state)', () => {

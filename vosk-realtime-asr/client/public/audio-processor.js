@@ -1,17 +1,32 @@
 /**
- * AudioWorklet 处理器
- * 在独立线程中处理音频数据，避免阻塞主线程
+ * AudioWorklet 处理器 (模块 C 加固)
+ *
+ * 增强:
+ *   - 软重采样兜底 (sourceSampleRate != 16k 时线性插值降频)
+ *   - underrun 检测 (currentTime 跳变 > 50ms 累计计数)
+ *   - postMessage 协议升级: { type, pcm, underrunCount, needsResampling }
+ *
+ * 模型: MiniMax-M3
  */
-
 class AudioProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
 
     // 配置参数
-    this.bufferSize = 2048;
+    this.bufferSize = (options && options.processorOptions && options.processorOptions.bufferSize) || 2048;
+    this.targetSampleRate = 16000;
+    // AudioWorkletProcessor 全局: sampleRate (实际硬件采样率) + currentTime (秒)
+    this.sourceSampleRate = sampleRate;
+    this.needsResampling = this.sourceSampleRate !== this.targetSampleRate;
+    this.resampleRatio = this.sourceSampleRate / this.targetSampleRate;
+
     this.buffer = new Float32Array(this.bufferSize);
     this.bufferIndex = 0;
     this.isRecording = false;
+
+    // underrun 检测
+    this.underrunCount = 0;
+    this.lastTickTime = currentTime;
 
     // 监听来自主线程的消息
     this.port.onmessage = (event) => {
@@ -20,6 +35,8 @@ class AudioProcessor extends AudioWorkletProcessor {
       if (type === 'start') {
         this.isRecording = true;
         this.bufferIndex = 0;
+        this.underrunCount = 0;
+        this.lastTickTime = currentTime;
       } else if (type === 'stop') {
         this.isRecording = false;
         this.flushBuffer();
@@ -33,64 +50,88 @@ class AudioProcessor extends AudioWorkletProcessor {
   }
 
   /**
-   * 处理音频数据
-   * 这是 AudioWorklet 的核心方法，在每个音频采样周期被调用
+   * 处理音频数据 — AudioWorklet 核心方法, 每音频采样周期被调一次
    */
   process(inputs, outputs, parameters) {
-    // 获取输入音频数据（单声道）
+    // 1. underrun 检测: 两次 process 间隔 > 50ms 视为 audio buffer 饥饿
+    const dt = currentTime - this.lastTickTime;
+    if (dt > 0.05) {
+      this.underrunCount += 1;
+    }
+    this.lastTickTime = currentTime;
+
+    // 2. 取输入通道
     const input = inputs[0];
     if (!input || !input[0]) {
       return true; // 继续运行
     }
-
     const inputChannel = input[0];
 
-    // 如果正在录音，则收集音频数据
-    if (this.isRecording) {
-      // 将 Float32 音频数据添加到缓冲区
-      for (let i = 0; i < inputChannel.length && this.bufferIndex < this.bufferSize; i++) {
-        this.buffer[this.bufferIndex++] = inputChannel[i];
-      }
-
-      // 当缓冲区满了，发送数据到主线程
-      if (this.bufferIndex >= this.bufferSize) {
-        this.flushBuffer();
-      }
+    if (!this.isRecording) {
+      return true;
     }
 
-    // 可选：将输入复制到输出（用于音频监听）
-    // const output = outputs[0];
-    // if (output && output[0]) {
-    //   output[0].set(inputChannel);
-    // }
+    // 3. 软重采样 (兜底)
+    const samples = this.needsResampling
+      ? this.resampleLinear(inputChannel)
+      : inputChannel;
 
-    return true; // 保持处理器活跃
+    // 4. 写入环形 buffer
+    for (let i = 0; i < samples.length && this.bufferIndex < this.bufferSize; i++) {
+      this.buffer[this.bufferIndex++] = samples[i];
+    }
+
+    // 5. buffer 满则 flush
+    if (this.bufferIndex >= this.bufferSize) {
+      this.flushBuffer();
+    }
+
+    return true;
   }
 
   /**
-   * 发送缓冲区数据到主线程
+   * 线性插值软重采样 (兜底用, 仅在 native 协商失败时启用)
+   * input: 源采样率音频
+   * output: 目标采样率音频 (长度 = floor(inputLen / ratio))
+   */
+  resampleLinear(input) {
+    const ratio = this.resampleRatio;
+    const outputLen = Math.floor(input.length / ratio);
+    const output = new Float32Array(outputLen);
+    for (let i = 0; i < outputLen; i++) {
+      const srcIdx = i * ratio;
+      const idx0 = Math.floor(srcIdx);
+      const idx1 = Math.min(idx0 + 1, input.length - 1);
+      const frac = srcIdx - idx0;
+      output[i] = input[idx0] * (1 - frac) + input[idx1] * frac;
+    }
+    return output;
+  }
+
+  /**
+   * Float32 -> Int16 PCM 编码, transferable 发到主线程
    */
   flushBuffer() {
     if (this.bufferIndex === 0) return;
 
-    // 将 Float32 转换为 Int16 (PCM 16-bit)
     const pcmData = new Int16Array(this.bufferIndex);
-
     for (let i = 0; i < this.bufferIndex; i++) {
-      // Float32 范围 [-1, 1] -> Int16 范围 [-32768, 32767]
       const sample = Math.max(-1, Math.min(1, this.buffer[i]));
       pcmData[i] = sample < 0 ? sample * 32768 : sample * 32767;
     }
 
-    // 发送 PCM 数据到主线程
-    // 使用 transferable 对象提高性能
-    this.port.postMessage(pcmData.buffer, [pcmData.buffer]);
+    this.port.postMessage(
+      {
+        type: 'audio',
+        pcm: pcmData.buffer,
+        underrunCount: this.underrunCount,
+        needsResampling: this.needsResampling,
+      },
+      [pcmData.buffer]
+    );
 
-    // 重置缓冲区
     this.bufferIndex = 0;
-    this.buffer = new Float32Array(this.bufferSize);
   }
 }
 
-// 注册 AudioWorklet 处理器
 registerProcessor('audio-processor', AudioProcessor);

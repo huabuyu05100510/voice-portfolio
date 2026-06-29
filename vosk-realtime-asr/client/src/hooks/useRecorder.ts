@@ -7,18 +7,22 @@
  * - 内部维护 engine ref + waveform visualizer ref (命令式资源)
  * - onAudioData 用 ref 存储最新回调, 避免 useCallback stale closure
  * - 暴露 MediaStream 给上层 Visualizer (AnalyserNode 直连)
+ * - 模块 C: 接受 profile 参数, 错误路径增加 trace span + console.error 日志
  *
- * Author: Claude Opus 4.8
+ * Author: Claude Opus 4.8 (模块 C: MiniMax-M3)
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { AudioCaptureEngine } from '../AudioCapture';
 import { WaveformVisualizer } from '../WaveformVisualizer';
+import type { AudioProfileId } from '../types';
 
 export type RecorderStatus = 'idle' | 'starting' | 'recording' | 'error';
 
 export interface UseRecorderOptions {
   /** 音频数据块回调 (每 0.25s 一个 Int16Array) */
   onAudioData?: (data: Int16Array) => void;
+  /** 音频 profile (pure / meeting), 默认 meeting */
+  profile?: AudioProfileId;
 }
 
 export interface UseRecorderReturn {
@@ -32,12 +36,14 @@ export interface UseRecorderReturn {
   bindWaveformCanvas: (el: HTMLCanvasElement | null) => void;
   start: () => Promise<void>;
   stop: () => void;
+  /** 当前激活的 engine 引用 (供 PerfMonitor 轮询 metrics) */
+  getEngine: () => AudioCaptureEngine | null;
 }
 
 export const useRecorder = (
   options: UseRecorderOptions = {},
 ): UseRecorderReturn => {
-  const { onAudioData } = options;
+  const { onAudioData, profile = 'meeting' } = options;
   const onAudioDataRef = useRef(onAudioData);
   onAudioDataRef.current = onAudioData;
 
@@ -49,14 +55,24 @@ export const useRecorder = (
   const engineRef = useRef<AudioCaptureEngine | null>(null);
   const waveRef = useRef<WaveformVisualizer | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const profileRef = useRef<AudioProfileId>(profile);
+  profileRef.current = profile;
 
   const start = useCallback(async () => {
     try {
       setStatus('starting');
       setError(null);
-      const engine = new AudioCaptureEngine();
+      const engine = new AudioCaptureEngine({ profile: profileRef.current });
       await engine.initialize();
       engineRef.current = engine;
+
+      // 模块 C: 监听 engine 错误事件, 透传日志
+      engine.on('error', (err: Error) => {
+        console.error('[useRecorder] engine.error', err);
+      });
+      engine.on('interrupted', () => {
+        console.warn('[useRecorder] engine.interrupted');
+      });
 
       engine.onAudioData((data) => {
         // 推到 wave visualizer
@@ -79,17 +95,31 @@ export const useRecorder = (
       setStatus('recording');
     } catch (e) {
       const msg = e instanceof Error ? e.message : '录音启动失败';
+      console.error('[useRecorder] start.failed', { message: msg, stack: e instanceof Error ? e.stack : undefined });
       setError(msg);
       setStatus('error');
+      throw e;  // 透传给 App.tsx, 防止 WS 握手在录音器失败后继续
     }
   }, []);
 
   const stop = useCallback(() => {
-    engineRef.current?.stop();
-    engineRef.current?.destroy();
+    try {
+      engineRef.current?.stop();
+    } catch (e) {
+      console.error('[useRecorder] stop.failed', e);
+    }
+    try {
+      engineRef.current?.destroy();
+    } catch (e) {
+      console.error('[useRecorder] destroy.failed', e);
+    }
     engineRef.current = null;
 
-    waveRef.current?.stop();
+    try {
+      waveRef.current?.stop();
+    } catch (e) {
+      console.error('[useRecorder] wave.stop.failed', e);
+    }
     waveRef.current = null;
     canvasRef.current = null;
 
@@ -106,6 +136,8 @@ export const useRecorder = (
       waveRef.current.start();
     }
   }, []);
+
+  const getEngine = useCallback(() => engineRef.current, []);
 
   // 卸载时释放资源
   useEffect(() => {
@@ -125,5 +157,6 @@ export const useRecorder = (
     bindWaveformCanvas,
     start,
     stop,
+    getEngine,
   };
 };

@@ -26,10 +26,39 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import traceback
 from typing import Callable, Optional
+
+_log = logging.getLogger("volc-server")
+
+# Module B: OTel 出站 span (服务端 → 火山引擎 WSS) — 依赖可选, 没装不阻塞
+try:
+    from opentelemetry import trace as _otel_trace
+    _OTEL_AVAILABLE = True
+except ImportError:
+    _otel_trace = None  # type: ignore
+    _OTEL_AVAILABLE = False
+
+
+def _start_outbound_span(name: str, attributes: Optional[dict] = None):
+    """
+    起一个 OTel span 包裹火山引擎出站调用. 不可用时返回 context manager 桩.
+    """
+    if not _OTEL_AVAILABLE:
+        class _NoopSpan:
+            def __enter__(self_inner): return self_inner
+            def __exit__(self_inner, *args): return False
+            def set_attribute(self_inner, k, v): pass
+            def set_status(self_inner, *args, **kwargs): pass
+            def record_exception(self_inner, *args, **kwargs): pass
+            def end(self_inner): pass
+        return _NoopSpan()
+    tracer = _otel_trace.get_tracer('volc-server', '1.0.0')
+    span = tracer.start_span(name, attributes=attributes or {})
+    return span
 
 # websocket-client 提供同步 API, 用 thread 跑读循环最简单
 try:
@@ -86,6 +115,7 @@ class VolcengineSession:
         self._ws = None
         self._reader_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._opened_event = threading.Event()  # F1: 握手完成门控
         self._lock = threading.Lock()
         self._opened = False
         self._opened_at: Optional[float] = None
@@ -93,6 +123,7 @@ class VolcengineSession:
         # 可观测: 内部 metrics
         self._audio_bytes_sent = 0
         self._frames_sent = 0
+        self._last_audio_sent_at: Optional[float] = None  # F3: per-utterance latency
 
     # ------------------------------------------------------------------
     # 公开 API
@@ -107,35 +138,45 @@ class VolcengineSession:
         )
         self._reader_thread.start()
 
+    def wait_until_ready(self, timeout: float = 5.0) -> bool:
+        """阻塞等待 WSS 握手 + full request 发送完成。F1 修复。"""
+        return self._opened_event.wait(timeout=timeout)
+
     def send_audio(self, audio: bytes) -> None:
         """发送一段音频 (audio-only 帧, 不含 LAST)"""
         if not self._ws or not self._opened:
             return
         if not audio:
             return
-        with self._lock:
-            try:
-                self._ws.send_binary(encode_audio_only(audio))
-                self._audio_bytes_sent += len(audio)
-                self._frames_sent += 1
-            except Exception as e:
-                self.on_error(0, f"send_audio failed: {e}", sid=self.sid)
-                self._stop_event.set()
+        # Module B: 出站 span 标记黑盒边界 (火山引擎 WSS 内部不可见)
+        with _start_outbound_span('volcengine.sauc.send', {'audio.bytes': len(audio)}):
+            with self._lock:
+                try:
+                    self._ws.send_binary(encode_audio_only(audio))
+                    self._audio_bytes_sent += len(audio)
+                    self._frames_sent += 1
+                    self._last_audio_sent_at = time.time()  # F3: 记录最后一帧发送时间
+                except Exception as e:
+                    self.on_error(0, f"send_audio failed: {e}", sid=self.sid)
+                    self._stop_event.set()
 
     def finalize(self, last_audio: bytes = b"") -> None:
         """发送最后一帧 (带 LAST flag), 通知服务端结束"""
         if not self._ws or not self._opened:
             return
-        with self._lock:
-            try:
-                payload = last_audio if last_audio else b"\x00\x00"
-                self._ws.send_binary(encode_audio_last(payload))
-                self._frames_sent += 1
-            except Exception as e:
-                self.on_error(0, f"finalize failed: {e}", sid=self.sid)
+        # Module B: 出站 span 标记结束帧
+        with _start_outbound_span('volcengine.sauc.finalize', {'audio.bytes': len(last_audio)}):
+            with self._lock:
+                try:
+                    payload = last_audio if last_audio else b"\x00\x00"
+                    self._ws.send_binary(encode_audio_last(payload))
+                    self._frames_sent += 1
+                except Exception as e:
+                    self.on_error(0, f"finalize failed: {e}", sid=self.sid)
 
     def close(self) -> None:
         """关闭 WSS + 回收线程"""
+        self._opened_event.clear()
         self._stop_event.set()
         try:
             if self._ws:
@@ -211,10 +252,21 @@ class VolcengineSession:
             extra_request=self.extra_request,
             # ⭐ 自动检测任意数量说话人 (默认 -1)
             diarization_speaker_count=-1,
+            # 之前 bug: 这三个参数只加到 build_full_request_payload 签名里,
+            # 但握手时根本没传 → 多说话人快速交替被并进同一 utterance.
+            # 二遍识别: 让 final 帧 definite 边界更干净 (官方推荐)
+            enable_nonstream=True,
+            # 静音 500ms 后强制切句 — 说话人切换的关键.
+            # 默认 800ms 太保守, A 停顿 600ms 后 B 接话会被合并.
+            # 最小 200, 实测 500 在切句速度和不碎句之间平衡最好.
+            end_window_size=500,
+            # 强制作为语音的最大静音时长 (官方推荐 1000ms)
+            force_to_speech_time=1000,
         )
         with self._lock:
             self._ws.send_binary(encode_full_client_request(payload))
             self._frames_sent += 1
+        self._opened_event.set()  # F1: 握手 + config 发送完成，解除门控
 
     def _handle_frame(self, data) -> None:
         """解析单帧并分发到回调"""
@@ -251,10 +303,39 @@ class VolcengineSession:
             return
 
         if ptype == "final":
-            latency_ms = (time.time() - self._opened_at) * 1000 if self._opened_at else 0
+            # F3: 用最后一帧发送时间计算真实识别延迟（而非会话总时长）
+            now = time.time()
+            if self._last_audio_sent_at:
+                latency_ms = (now - self._last_audio_sent_at) * 1000
+            elif self._opened_at:
+                latency_ms = (now - self._opened_at) * 1000
+            else:
+                latency_ms = 0
             result = payload.get("result") or payload
             text = result.get("text", "")
             utterances, speakers = _extract_utterances_and_speakers(result)
+            # DIAG: 长期保留, 抓多说话人合并 bug 的真实协议帧
+            # 多说话人场景问题定位关键 — 看 utt_count / spk_count / 每 utterance 的 spk
+            try:
+                raw_utts = result.get("utterances") or []
+                diag_utts = [
+                    {
+                        "text_len": len(u.get("text", "")),
+                        "text_head": u.get("text", "")[:60],
+                        "start": u.get("start_time"),
+                        "end": u.get("end_time"),
+                        "definite": u.get("definite"),
+                        "spk": (u.get("additions") or {}).get("speaker_id") or u.get("speaker_id"),
+                    }
+                    for u in raw_utts
+                ]
+                _log.info(
+                    "[DIAG][final] utt_count=%d spk_count=%d text_len=%d utts=%s",
+                    len(raw_utts), len(speakers), len(text),
+                    json.dumps(diag_utts, ensure_ascii=False),
+                )
+            except Exception as _e:
+                _log.warning("[DIAG][final] err=%s", _e)
             self.on_final(text, utterances, speakers, latency_ms=latency_ms, sid=self.sid)
             return
 
@@ -263,9 +344,36 @@ class VolcengineSession:
             # 但是如果 full 帧里已经有 utterances, 当作 final 处理
             result = payload.get("result") or {}
             if isinstance(result, dict) and result.get("utterances"):
-                latency_ms = (time.time() - self._opened_at) * 1000 if self._opened_at else 0
+                now = time.time()
+                if self._last_audio_sent_at:
+                    latency_ms = (now - self._last_audio_sent_at) * 1000
+                elif self._opened_at:
+                    latency_ms = (now - self._opened_at) * 1000
+                else:
+                    latency_ms = 0
                 text = result.get("text", "")
                 utterances, speakers = _extract_utterances_and_speakers(result)
+                # DIAG: 同 final, 抓 full 帧 (full 是流式累积主路径)
+                try:
+                    raw_utts = result.get("utterances") or []
+                    diag_utts = [
+                        {
+                            "text_len": len(u.get("text", "")),
+                            "text_head": u.get("text", "")[:60],
+                            "start": u.get("start_time"),
+                            "end": u.get("end_time"),
+                            "definite": u.get("definite"),
+                            "spk": (u.get("additions") or {}).get("speaker_id") or u.get("speaker_id"),
+                        }
+                        for u in raw_utts
+                    ]
+                    _log.info(
+                        "[DIAG][full] utt_count=%d spk_count=%d text_len=%d utts=%s",
+                        len(raw_utts), len(speakers), len(text),
+                        json.dumps(diag_utts, ensure_ascii=False),
+                    )
+                except Exception as _e:
+                    _log.warning("[DIAG][full] err=%s", _e)
                 self.on_final(text, utterances, speakers, latency_ms=latency_ms, sid=self.sid)
             return
 

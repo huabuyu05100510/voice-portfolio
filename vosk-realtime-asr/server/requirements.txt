@@ -16,3 +16,10 @@ psutil>=5.9.0
 # 工具
 python-dotenv>=1.0.0  # 读 .env
 uuid>=1.30
+
+# Module B: OpenTelemetry 跨进程 trace (服务端)
+# 设计原则: volcengine_session.py 中以 try/except ImportError 包裹, 未装也安全降级 (no-op span).
+# 推荐: 服务端部署时再安装, 不强制本地开发装.
+# opentelemetry-api>=1.25.0
+# opentelemetry-sdk>=1.25.0
+# opentelemetry-exporter-otlp-proto-http>=1.25.0

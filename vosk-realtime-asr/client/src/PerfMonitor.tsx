@@ -124,8 +124,21 @@ export type LatencySink = (latencyMs: number) => void;
 export interface PerfMonitorHandle {
   /** 推一条转写延迟样本 (从 wsClient.onTranscriptionResult 触发) */
   recordLatency: (latencyMs: number) => void;
+  /** Sprint 12 模块 A: 推一条 partial 接收时间戳 (用于算 Hz) */
+  recordPartial: (timestampMs?: number) => void;
+  /** Sprint 12 模块 A: 推一条 CaptionBar 渲染耗时 (来自 Profiler.onRender) */
+  recordCaptionRender: (renderMs: number) => void;
+  /** 模块 C: 推一条 audio 引擎指标快照 (baseLatency / outputLatency / underrunCount) */
+  recordAudio: (snapshot: AudioMetricSnapshot) => void;
   /** 重置所有窗口 */
   reset: () => void;
+}
+
+/** 模块 C: AudioCaptureEngine.getMetrics() 的 PerfMonitor 视图 */
+export interface AudioMetricSnapshot {
+  baseLatency: number | null;
+  outputLatency: number | null;
+  underrunCount: number;
 }
 
 export interface PerfMonitorProps {
@@ -177,6 +190,11 @@ export const PerfMonitor: React.FC<PerfMonitorProps> = ({
   // 转写延迟窗口
   const latencyRef = useRef(new SlidingWindow<number>(latencyWindowSize));
 
+  // Sprint 12 模块 A: partial 接收频率窗口 (Hz)
+  const partialTimesRef = useRef<number[]>([]);
+  // Sprint 12 模块 A: CaptionBar 渲染耗时窗口 (ms, 来自 React Profiler onRender)
+  const captionRenderRef = useRef(new SlidingWindow<number>(60));
+
   // 上一帧时间 (算 frameTime)
   const lastFrameRef = useRef<number>(0);
 
@@ -187,6 +205,14 @@ export const PerfMonitor: React.FC<PerfMonitorProps> = ({
   const fpsRef = useRef<number>(0);
   const frameTimeRef = useRef<number>(0);
   const memoryRef = useRef<PerformanceMemory | null>(null);
+  const partialHzRef = useRef<number>(0);
+  const captionRenderMsRef = useRef<number>(0);
+  // 模块 C: audio.* 指标快照
+  const audioSnapshotRef = useRef<AudioMetricSnapshot>({
+    baseLatency: null,
+    outputLatency: null,
+    underrunCount: 0,
+  });
 
   // --------------------------------------------------------------------------
   // 暴露 handle 给父组件 (App 拿到后调 recordLatency)
@@ -198,8 +224,32 @@ export const PerfMonitor: React.FC<PerfMonitorProps> = ({
           latencyRef.current.push(latencyMs);
         }
       },
+      recordPartial: (timestampMs?: number) => {
+        const t = timestampMs ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        // 滑动窗口: 只保留最近 5s 内的部分时间戳
+        const cutoff = t - 5000;
+        const arr = partialTimesRef.current;
+        // 丢弃 < cutoff 的 (简单剪枝, 窗口 5s 上限 50 个样本, 5Hz partial 足够)
+        while (arr.length > 0 && arr[0] < cutoff) arr.shift();
+        arr.push(t);
+      },
+      recordCaptionRender: (renderMs: number) => {
+        if (Number.isFinite(renderMs) && renderMs >= 0) {
+          captionRenderRef.current.push(renderMs);
+        }
+      },
+      // 模块 C: 推 audio 引擎指标快照
+      recordAudio: (snapshot: AudioMetricSnapshot) => {
+        audioSnapshotRef.current = {
+          baseLatency: snapshot.baseLatency,
+          outputLatency: snapshot.outputLatency,
+          underrunCount: snapshot.underrunCount,
+        };
+      },
       reset: () => {
         latencyRef.current.clear();
+        captionRenderRef.current.clear();
+        partialTimesRef.current = [];
         frameBufRef.current = {
           times: new Float64Array(fpsWindowSize),
           head: 0,
@@ -207,6 +257,9 @@ export const PerfMonitor: React.FC<PerfMonitorProps> = ({
         };
         fpsRef.current = 0;
         frameTimeRef.current = 0;
+        partialHzRef.current = 0;
+        captionRenderMsRef.current = 0;
+        audioSnapshotRef.current = { baseLatency: null, outputLatency: null, underrunCount: 0 };
       },
     };
     handleRef.current = handle;
@@ -266,6 +319,26 @@ export const PerfMonitor: React.FC<PerfMonitorProps> = ({
   const fps = fpsRef.current;
   const frameTime = frameTimeRef.current;
   const mem = memoryRef.current;
+
+  // Sprint 12 模块 A: partial Hz + caption render ms
+  //   partial Hz: 5s 窗口内时间戳数量 / 5
+  //   caption render: 60 样本窗口的 P95 (避免最坏值跳动)
+  const partialTimes = partialTimesRef.current;
+  if (partialTimes.length >= 2) {
+    const span = partialTimes[partialTimes.length - 1] - partialTimes[0];
+    if (span > 0) {
+      partialHzRef.current = ((partialTimes.length - 1) * 1000) / span;
+    }
+  } else if (partialTimes.length === 0) {
+    partialHzRef.current = 0;
+  }
+  const partialHz = partialHzRef.current;
+  const captionSamples = captionRenderRef.current.values();
+  const captionRenderMs = captionSamples.length > 0 ? percentile(captionSamples, 95) : 0;
+  captionRenderMsRef.current = captionRenderMs;
+
+  // 模块 C: audio.* 指标本地快照 (从 ref 取, 用于渲染)
+  const audioSnapshot = audioSnapshotRef.current;
 
   // FPS 颜色: 绿 ≥55, 黄 30-54, 红 <30
   const fpsColor = fps >= 55 ? '#10b981' : fps >= 30 ? '#fbbf24' : '#ef4444';
@@ -334,6 +407,44 @@ export const PerfMonitor: React.FC<PerfMonitorProps> = ({
           <div className="perf-row perf-row-sub">
             <span className="perf-label">samples</span>
             <span className="perf-value-sub">{latencies.length}/{latencyWindowSize}</span>
+          </div>
+
+          <div className="perf-divider" />
+
+          {/* Sprint 12 模块 A: partial Hz + caption render P95 */}
+          <div className="perf-row">
+            <span className="perf-label">Partial Hz</span>
+            <span className="perf-value" data-perf-partial-hz>
+              {partialHz.toFixed(1)}
+            </span>
+          </div>
+          <div className="perf-row">
+            <span className="perf-label">Caption P95</span>
+            <span className="perf-value" data-perf-caption-render style={{ color: captionRenderMs > 4 ? '#ef4444' : captionRenderMs > 2 ? '#fbbf24' : '#10b981' }}>
+              {captionRenderMs.toFixed(2)}ms
+            </span>
+          </div>
+
+          {/* 模块 C: audio.* 指标 */}
+          <div className="perf-row">
+            <span className="perf-label">Audio baseLatency</span>
+            <span className="perf-value" data-perf-audio-base-latency>
+              {audioSnapshot.baseLatency != null ? audioSnapshot.baseLatency.toFixed(3) : '—'}
+              <span className="perf-value-sub"> s</span>
+            </span>
+          </div>
+          <div className="perf-row">
+            <span className="perf-label">Audio outputLatency</span>
+            <span className="perf-value" data-perf-audio-output-latency>
+              {audioSnapshot.outputLatency != null ? audioSnapshot.outputLatency.toFixed(3) : '—'}
+              <span className="perf-value-sub"> s</span>
+            </span>
+          </div>
+          <div className="perf-row">
+            <span className="perf-label">Worklet underruns</span>
+            <span className="perf-value" data-perf-audio-underruns style={{ color: audioSnapshot.underrunCount > 5 ? '#ef4444' : audioSnapshot.underrunCount > 0 ? '#fbbf24' : '#10b981' }}>
+              {audioSnapshot.underrunCount}
+            </span>
           </div>
 
           <div className="perf-divider" />

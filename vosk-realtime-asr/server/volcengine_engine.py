@@ -300,12 +300,21 @@ def build_full_request_payload(
     show_utterances: bool = True,
     enable_speaker_info: bool = True,  # 火山官方分角色参数名 (替代旧的 show_speaker_info)
     enable_diarization: bool = True,   # 兼容旧 API 命名 (内部映射到 enable_speaker_info)
-    result_type: str = "single",
+    # ⭐ full: 每帧返回全部 utterances[] (带 definite + 稳定 start_time)
+    #   客户端按 start_time 分段, definite:true 锁定. 会议室多角色必须用 full.
+    #   single: 只返当前一句, 数字↔中文数字重写会让文本合并全部失败.
+    result_type: str = "full",
     sample_rate: int = 16000,
     bits: int = 16,
     channels: int = 1,
     platform: str = "Web",
     extra_request: dict = None,
+    # 二遍识别 (nostream re-recognition): 让 final 帧的 definite 边界更干净
+    enable_nonstream: bool = False,
+    # VAD 强断句: 静音 end_window_size 毫秒后强制切句 (默认 800, 最小 200)
+    end_window_size: int = None,
+    # 强制作为语音的最大静音时长 (推荐 1000ms, 与 end_window_size 配合)
+    force_to_speech_time: int = None,
     # ⭐ 多说话人关键参数: -1 = 自动检测任意人数, 默认 2 在某些版本上锁死
     diarization_speaker_count: int = -1,
 ) -> Dict[str, Any]:
@@ -333,6 +342,13 @@ def build_full_request_payload(
         # v1/sauc 服务端要求 request.reqid 必须存在 (uuid-like)
         "reqid": _gen_reqid(),
     }
+    # 二遍识别 + VAD 强断句 (官方推荐让 definite 边界更干净)
+    if enable_nonstream:
+        req["enable_nonstream"] = True
+    if end_window_size is not None:
+        req["end_window_size"] = end_window_size
+    if force_to_speech_time is not None:
+        req["force_to_speech_time"] = force_to_speech_time
     # v3 官方字段: enable_speaker_info
     # 兼容旧版本: 同时发 show_speaker_info (服务端会忽略不认识的字段)
     if enable_diarization or enable_speaker_info:
@@ -447,13 +463,13 @@ def extract_utterances(final_payload: Dict[str, Any]) -> Tuple[list, list]:
 
     for u in raw_utts:
         # v3/sauc (豆包 2.0): speaker_id 在 additions 里
+        # 缺失时返回 None (不再用 "spk?" 占位 — 避免污染 speaker_pool)
         additions = u.get("additions") or {}
         sid = (
             additions.get("speaker_id")
             or u.get("speaker_id")
-            or "spk?"
         )
-        if sid not in speaker_id_to_label:
+        if sid and sid not in speaker_id_to_label:
             speaker_id_to_label[sid] = f"发言人 {len(speakers) + 1}"
             speakers.append({"id": sid, "label": speaker_id_to_label[sid]})
         utterances.append({
@@ -462,6 +478,9 @@ def extract_utterances(final_payload: Dict[str, Any]) -> Tuple[list, list]:
             "end_time": u.get("end_time", 0),
             "speaker_id": sid,
             "words": u.get("words") or [],
+            # ⭐ definite 透传: full 协议的官方句子边界信号
+            # True = 该句已确定不再变化 (客户端 reducer 据此锁定卡片)
+            "definite": u.get("definite", False),
         })
     return utterances, speakers
 

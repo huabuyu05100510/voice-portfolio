@@ -14,17 +14,24 @@ export default defineConfig({
     port: 3000,
     host: true,
     proxy: {
-      // WebSocket 代理
-      '/ws': {
-        target: 'ws://localhost:5000',
+      // Socket.IO 代理 (必须在 /api 前, 否则被 /api 截走)
+      '/socket.io': {
+        target: 'http://127.0.0.1:5000',
         ws: true,
         changeOrigin: true,
       },
       // API 代理
       '/api': {
-        target: 'http://localhost:5000',
+        target: 'http://127.0.0.1:5000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+      // Module B: OTel OTLP HTTP 导出器代理 (浏览器端走 /otel/v1/traces, 透传到后端 ingest)
+      // 后端未启动时此代理会 502, 浏览器 OTel BatchSpanProcessor 内部有重试/退避, 不影响主流程.
+      '/otel': {
+        target: 'http://localhost:4318',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/otel/, '/otel'),
       },
     },
   },

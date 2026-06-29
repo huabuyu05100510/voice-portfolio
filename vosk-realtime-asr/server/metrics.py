@@ -80,6 +80,11 @@ class MetricsCollector:
         ['error_type']
     )
 
+    connections_rejected_total = Counter(
+        'ws_connections_rejected_total',
+        'Total number of connections rejected due to capacity or rate limiting'
+    )
+
     # ========================================================================
     # 转写指标
     # ========================================================================
@@ -124,6 +129,58 @@ class MetricsCollector:
         'audio_processing_time_ms',
         'Time spent processing audio chunks',
         buckets=[10, 20, 50, 100, 200, 500]
+    )
+
+    # ========================================================================
+    # 音色设计 (Voice Design) 指标 — 2026-06-27
+    # ========================================================================
+    voice_design_generated_total = Counter(
+        'voice_design_generated_total',
+        'Total number of voice design generation calls',
+        ['status'],
+    )
+    voice_design_saved_total = Counter(
+        'voice_design_saved_total',
+        'Total number of voice design save calls',
+        ['status'],
+    )
+    voice_design_latency_ms = Histogram(
+        'voice_design_latency_ms',
+        'Voice design generation round-trip latency',
+        buckets=[200, 500, 1000, 2000, 3000, 5000, 10000],
+    )
+
+    # ========================================================================
+    # 声音复刻 2.0 指标 (2026-06-27)
+    # ========================================================================
+    voice_upload_total = Counter(
+        'voice_upload_total',
+        'Total number of voice cloning audio uploads',
+        ['outcome']
+    )
+    voice_train_total = Counter(
+        'voice_train_total',
+        'Total number of voice clone training attempts',
+        ['outcome']
+    )
+    voice_train_duration_seconds = Histogram(
+        'voice_train_duration_seconds',
+        'Voice clone training duration in seconds (train → success)',
+        buckets=[5, 10, 30, 60, 120, 300, 600]
+    )
+
+    # ========================================================================
+    # SeedTTS 2.0 语音合成指标 (2026-06-27)
+    # ========================================================================
+    tts_requests_total = Counter(
+        'tts_requests_total',
+        'Total number of TTS 2.0 synthesis requests',
+        ['status', 'voice']
+    )
+    tts_latency_seconds = Histogram(
+        'tts_latency_seconds',
+        'TTS 2.0 synthesis latency in seconds',
+        buckets=[0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
     )
 
     # ========================================================================

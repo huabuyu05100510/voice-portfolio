@@ -249,3 +249,67 @@ describe('PerfMonitor 组件', () => {
     expect(handleRef.current).not.toBeNull();
   });
 });
+
+/* ============================================================================
+   Sprint 12 模块 A — partialHz + captionRenderMs
+   ============================================================================ */
+describe('Sprint 12 / PerfMonitor 新增指标', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it('recordPartial 推多条时间戳 → 1Hz 后渲染 partialHz', () => {
+    const handleRef: { current: PerfMonitorHandle | null } = { current: null };
+    render(<PerfMonitor onHandle={(h) => { handleRef.current = h; }} defaultOpen={true} />);
+    act(() => {
+      // 模拟 5s 内的 10 条 partial, 间隔 500ms
+      for (let i = 0; i <= 10; i++) {
+        handleRef.current?.recordPartial(i * 500);
+      }
+      // 等 1Hz tick 触发 re-render
+      vi.advanceTimersByTime(1100);
+    });
+    const el = document.querySelector('[data-perf-partial-hz]');
+    expect(el).not.toBeNull();
+    // 5s / 500ms = 10 段, 10 样本 → (10-1)*1000/5000 = 1.8 Hz
+    expect(parseFloat(el?.textContent || '0')).toBeGreaterThan(1.5);
+  });
+
+  it('recordCaptionRender 推耗时 → 渲染 P95 (ms)', () => {
+    const handleRef: { current: PerfMonitorHandle | null } = { current: null };
+    render(<PerfMonitor onHandle={(h) => { handleRef.current = h; }} defaultOpen={true} />);
+    act(() => {
+      handleRef.current?.recordCaptionRender(1.0);
+      handleRef.current?.recordCaptionRender(2.0);
+      handleRef.current?.recordCaptionRender(3.5);
+      vi.advanceTimersByTime(1100);
+    });
+    const el = document.querySelector('[data-perf-caption-render]');
+    expect(el).not.toBeNull();
+    // P95 (3 个样本 nearest-rank ceil(0.95*3)=3) -> sorted[2] = 3.5
+    expect(parseFloat(el?.textContent || '0')).toBeGreaterThanOrEqual(3.4);
+  });
+
+  it('reset 同时清空 partialHz / captionRender 窗口', () => {
+    const handleRef: { current: PerfMonitorHandle | null } = { current: null };
+    render(<PerfMonitor onHandle={(h) => { handleRef.current = h; }} defaultOpen={true} />);
+    act(() => {
+      handleRef.current?.recordPartial(0);
+      handleRef.current?.recordPartial(1000);
+      handleRef.current?.recordCaptionRender(5);
+    });
+    act(() => {
+      handleRef.current?.reset();
+      vi.advanceTimersByTime(1100);
+    });
+    // reset 后, 数据元素仍渲染但值应为 0
+    const partialEl = document.querySelector('[data-perf-partial-hz]');
+    const renderEl = document.querySelector('[data-perf-caption-render]');
+    expect(partialEl?.textContent).toMatch(/^0\.0$/);
+    expect(renderEl?.textContent).toMatch(/^0\.00ms$/);
+  });
+});

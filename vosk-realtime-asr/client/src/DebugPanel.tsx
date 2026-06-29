@@ -6,6 +6,7 @@
  */
 import React, { useState } from 'react';
 import type { DebugEntry } from './hooks/useDebugLog';
+import { BugIcon, ChevronDownIcon, ChevronRightIcon } from './design/icons';
 
 export interface DebugPanelProps {
   entries: DebugEntry[];
@@ -13,7 +14,6 @@ export interface DebugPanelProps {
 
 export const DebugPanel: React.FC<DebugPanelProps> = React.memo(({ entries }) => {
   const [open, setOpen] = useState(false);
-  const lastTs = entries[entries.length - 1]?.ts;
 
   return (
     <section
@@ -28,11 +28,11 @@ export const DebugPanel: React.FC<DebugPanelProps> = React.memo(({ entries }) =>
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
-        <span className="emoji" aria-hidden="true">🪲</span>
+        <BugIcon size={14} />
         <span>调试日志</span>
         <span className="debug-drawer-count">{entries.length}</span>
         <span className="debug-drawer-chevron" aria-hidden="true">
-          {open ? '▾' : '▸'}
+          {open ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
         </span>
       </button>
       {open && (

@@ -12,6 +12,8 @@ export interface SpeakerListProps {
   speakers: Speaker[];
   currentSpeakerId: string | null;
   isRecording: boolean;
+  /** 重命名透传 (会议室场景) */
+  onRenameSpeaker?: (speakerId: string, label: string) => void;
 }
 
 export const SpeakerList: React.FC<SpeakerListProps> = React.memo((p) => {
@@ -31,6 +33,7 @@ export const SpeakerList: React.FC<SpeakerListProps> = React.memo((p) => {
           speaker={s}
           index={idx}
           active={s.id === p.currentSpeakerId}
+          onRename={p.onRenameSpeaker}
         />
       ))}
     </div>

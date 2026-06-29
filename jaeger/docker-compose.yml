@@ -1,0 +1,29 @@
+version: '3.8'
+
+# Module B — Jaeger 全链路 trace 可视化
+# 启动: cd jaeger && docker compose up -d
+# 访问: http://localhost:16686 (Jaeger UI)
+#
+# 注意: 不在 docker 中间暴露 4317 (gRPC), 只暴露 4318 (OTLP HTTP), 简化部署.
+# 后端 Python / 前端 Vite 通过 4318 提交 OTLP spans.
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: voice-portfolio-jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4318:4318"     # OTLP HTTP (推荐端点)
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      # 生产可加 retention 限制
+      # SPAN_STORAGE_TYPE: "badger"
+      # BADGER_EPHEMERAL: "false"
+      # BADGER_DIRECTORY_VALUE: "/badger/data"
+      # BADGER_DIRECTORY_KEY: "/badger/keys"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

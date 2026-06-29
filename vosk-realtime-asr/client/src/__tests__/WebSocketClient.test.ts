@@ -105,8 +105,17 @@ describe('WebSocketClient', () => {
     mockSocket.connected = true;
     c.startRecording();
     c.stopRecording();
-    expect(mockSocket.emit).toHaveBeenCalledWith('start_recording');
+    // start_recording 现在携带 enable_tts 选项 (NestJS 后端契约)
+    expect(mockSocket.emit).toHaveBeenCalledWith('start_recording', { enable_tts: true });
     expect(mockSocket.emit).toHaveBeenCalledWith('stop_recording');
+  });
+
+  it('startRecording({ enable_tts: false }) 透传选项', () => {
+    const c = new WebSocketClient('http://localhost:5000');
+    c.connect();
+    mockSocket.connected = true;
+    c.startRecording({ enable_tts: false });
+    expect(mockSocket.emit).toHaveBeenCalledWith('start_recording', { enable_tts: false });
   });
 
   it('disconnect 调用 socket.disconnect 并清空 socket', () => {

@@ -11,12 +11,14 @@ import time
 import json
 import threading
 from datetime import datetime
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, jsonify, Response
 from flask_socketio import SocketIO, emit
 
 from config import Config
-from logger import StructuredLogger
-from metrics import MetricsCollector, safe_value
+from logger import StructuredLogger, traceparent_to_trace_id
+from metrics import MetricsCollector, safe_value, safe_observe_sum
+from rate_limiter import RateLimiter
+import tts as tts_module  # SeedTTS 2.0 (语音合成 2.0) 代理
 
 # Flask + SocketIO 单例 (无副作用)
 app = Flask(__name__, static_folder='../client/dist', template_folder='../client/public', static_url_path='/static')
@@ -39,6 +41,7 @@ SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 # 运行期对象 (由 boot_app() 填充)
 logger: StructuredLogger = None  # type: ignore
 metrics: MetricsCollector = None  # type: ignore
+rate_limiter: RateLimiter = None  # type: ignore
 volc_config: dict = None  # type: ignore
 
 # sid → 会话对象 (启动后才填充)
@@ -51,7 +54,7 @@ def boot_app():
     应用启动函数 (替代模块级副作用, 避免 multiprocessing.spawn 重新执行时冲突)
     由 run_server.py 在 if __name__ == '__main__' 下调用
     """
-    global logger, metrics, volc_config
+    global logger, metrics, rate_limiter, volc_config
 
     # 延迟导入, 避免在 spawn re-import 时加载
     from prometheus_client import start_http_server
@@ -59,6 +62,13 @@ def boot_app():
 
     logger = StructuredLogger('volc-server')
     metrics = MetricsCollector()
+    rate_limiter = RateLimiter()
+    # 把 metrics 注入 tts 模块 (否则 tts._get_metrics() 走 noop)
+    tts_module.metrics = metrics
+
+    # 录音文件识别 2.0 路由 (异步任务式, 不依赖 volcengine_session)
+    from file_asr import register_routes as _file_asr_register
+    _file_asr_register(app)
 
     # 校验火山引擎配置
     if not Config.VOLC_APP_KEY or not Config.VOLC_ACCESS_TOKEN:
@@ -85,6 +95,25 @@ def boot_app():
             logger.warning(f"VOLC_EXTRA_REQUEST 解析失败: {e}, 忽略")
     volc_config['extra_request'] = extra_request
 
+    # 音色设计 (Voice Design) 路由 — 不依赖 volcengine_session, 纯 HTTP 转发
+    try:
+        import voice_design as _vd_module
+        app.config['VOICE_DESIGN_APP_KEY'] = Config.VOLC_VOICE_DESIGN_APP_ID
+        app.config['VOICE_DESIGN_TOKEN'] = Config.VOLC_VOICE_DESIGN_TOKEN
+        app.config['VOICE_DESIGN_ENDPOINT'] = Config.VOLC_VOICE_DESIGN_ENDPOINT
+        app.config['VOICE_DESIGN_CLUSTER'] = Config.VOLC_VOICE_DESIGN_CLUSTER
+        _vd_module.register_voice_design_routes(app, logger=logger, metrics=metrics)
+        logger.info(
+            f"音色设计路由已挂载: endpoint={Config.VOLC_VOICE_DESIGN_ENDPOINT}, "
+            f"cluster={Config.VOLC_VOICE_DESIGN_CLUSTER}, "
+            f"app_id_set={bool(Config.VOLC_VOICE_DESIGN_APP_ID)}",
+            extra={'event_type': 'voice_design_mounted'},
+        )
+    except Exception as e:
+        logger.warning(f"音色设计路由挂载失败: {e}", extra={
+            'event_type': 'voice_design_mount_failed',
+        })
+
     # Prometheus
     start_http_server(Config.PROMETHEUS_PORT)
     logger.info(f"Prometheus metrics server started on port {Config.PROMETHEUS_PORT}")
@@ -94,6 +123,34 @@ def boot_app():
         f"app_key={'set' if Config.VOLC_APP_KEY else 'MISSING'}",
         extra={'event_type': 'volcengine_config', 'metadata': volc_config_safe()},
     )
+
+    # 语音播客大模型路由 (P0 注册, 凭证从环境变量 / Config 注入)
+    from podcast import register_podcast_routes
+    register_podcast_routes(app)
+    logger.info(
+        "Podcast routes registered: /api/podcast/{styles,generate,task/<id>}",
+        extra={'event_type': 'podcast_routes_registered'},
+    )
+
+    # 端到端实时语音交互路由 (Sprint 13 / MiniMax-M3)
+    # 凭证从环境变量注入, 缺失时仅记录警告, 启动不中断
+    # (健康检查端点 /api/realtime/health 会报告 configured=false).
+    try:
+        from realtime_voice import register_realtime_routes, build_realtime_client_from_env
+        rt_client = build_realtime_client_from_env()
+        register_realtime_routes(app, client_factory=lambda: rt_client)
+        logger.info(
+            f"Realtime Voice 路由已挂载: endpoint={Config.VOLC_REALTIME_ENDPOINT}, "
+            f"model={Config.VOLC_REALTIME_MODEL}, "
+            f"app_id_set={bool(Config.VOLC_REALTIME_APP_ID)}, "
+            f"token_set={bool(Config.VOLC_REALTIME_TOKEN)}",
+            extra={'event_type': 'realtime_voice_mounted'},
+        )
+    except Exception as e:
+        logger.warning(f"Realtime Voice 路由挂载失败: {e}", extra={
+            'event_type': 'realtime_voice_mount_failed',
+            'metadata': {'reason': str(e)[:200]},
+        })
 
 
 def volc_config_safe():
@@ -130,6 +187,8 @@ def create_session(session_id: str, client_type: str = 'web') -> dict:
         'volc_session': None,
         'speakers_seen': {},  # speaker_id → {label, first_seen_at}
         'current_speaker_id': None,
+        'last_known_speaker_id': None,  # P0-3: sticky speaker, partial fallback 用
+        'last_metrics_emit_at': 0.0,  # F6: 节流 session_status 推送
         'metrics': {
             'audio_bytes': 0,
             'transcription_chars': 0,
@@ -188,13 +247,14 @@ def _on_volc_partial(text: str, sid: str):
     if not session:
         return
     metrics.transcription_results_total.labels(is_final='false').inc()
-    # partial 没有 speaker_id, 用 session 当前的
+    # partial 没有 speaker_id, fallback: 当前说话人 → 最近已知说话人
+    speaker_id = session.get('current_speaker_id') or session.get('last_known_speaker_id')
     payload = {
         'text': text,
         'is_final': False,
         'full_text': session['text_buffer'],
         'latency_ms': 0,
-        'speaker_id': session.get('current_speaker_id'),
+        'speaker_id': speaker_id,
         'speakers': list(session.get('speakers_seen', {}).values()),
         'timestamp': datetime.utcnow().isoformat(),
     }
@@ -208,19 +268,24 @@ def _on_volc_final(text: str, utterances: list, speakers: list, latency_ms: floa
 
     metrics.transcription_results_total.labels(is_final='true').inc()
     metrics.transcription_chars_total.labels(language='zh').inc(len(text))
+    session['metrics']['transcription_chars'] += len(text)  # F4: 修复 chars 计数从未增加的 bug
 
-    # Sprint 10: 智能拼接 text_buffer
-    # 火山引擎在不同模式下, result.text 可能是:
-    #   - 一句一返 (single mode): 只有最新一句
-    #   - 累积模式: 整个会话的所有内容 (增量)
-    # 不管哪种, 我们都要保持 buffer 单调递增且去重
     from text_buffer import smart_append, get_last_speaker, extract_text_from_utterances
-    session['text_buffer'], _ = smart_append(session['text_buffer'], text)
-    # 如果有 utterances, 用 utterances 拼接更可靠 (多说话人场景)
+
+    # F5: 去除双重 smart_append 导致的内容重复
+    # 优先用 utterances 拼接（多说话人场景更精确），没有时才用 result.text
     if utterances:
         utt_text = extract_text_from_utterances(utterances)
-        if utt_text:
-            session['text_buffer'], _ = smart_append(session['text_buffer'], utt_text)
+        merge_text = utt_text if utt_text else text
+    else:
+        merge_text = text
+
+    # 火山引擎 v3 sauc 是累积协议: 同一轮发言内每次 final 返回当前这句话的全文,
+    # 文本单调增长 (实测 3→8→...→74), 轮次切换/句号后才重置.
+    # is_cumulative=True 让 reducer path A (前缀扩展 → 就地更新) 工作,
+    # 同一说话人的连续语音只在一张卡片里增长, 不再裂成几十段.
+    session['text_buffer'], _ = smart_append(session['text_buffer'], merge_text)
+    is_cumulative = True
 
     # 更新说话人池 (前端需要稳定 id→label 映射)
     # Sprint 10: 按首次出现顺序分配 label
@@ -249,6 +314,12 @@ def _on_volc_final(text: str, utterances: list, speakers: list, latency_ms: floa
         # fallback 到 result-level speaker_id
         current_speaker = None
     session['current_speaker_id'] = current_speaker
+    # P0-3: sticky speaker — 只在确实解析到时才覆盖, partial 帧据此 fallback
+    if current_speaker:
+        session['last_known_speaker_id'] = current_speaker
+    # 累积中间帧 (utterance_count=1) 火山引擎不返 speaker_id,
+    # final payload 必须也 fallback 到 last_known, 否则 UI 全是"未知说话人".
+    resolved_speaker = current_speaker or session.get('last_known_speaker_id')
 
     if latency_ms and latency_ms > 0:
         session['metrics']['latencies'].append(latency_ms)
@@ -257,9 +328,10 @@ def _on_volc_final(text: str, utterances: list, speakers: list, latency_ms: floa
     payload = {
         'text': text,
         'is_final': True,
+        'is_cumulative': is_cumulative,  # F2: 客户端据此选择合并策略
         'full_text': session['text_buffer'],
         'latency_ms': round(latency_ms or 0, 2),
-        'speaker_id': current_speaker,
+        'speaker_id': resolved_speaker,
         'speakers': list(speaker_pool.values()),
         'utterances': utterances or [],
         'timestamp': datetime.utcnow().isoformat(),
@@ -270,7 +342,8 @@ def _on_volc_final(text: str, utterances: list, speakers: list, latency_ms: floa
         'metadata': {
             'text_length': len(text),
             'utterance_count': len(utterances or []),
-            'speaker_id': current_speaker,
+            'speaker_id': resolved_speaker,
+            'is_unknown_speaker': resolved_speaker is None,
             'speaker_count': len(speaker_pool),
             'latency_ms': round(latency_ms or 0, 2),
         }
@@ -300,19 +373,57 @@ def handle_connect(auth=None):
         return False  # 还没启动完, 拒绝连接
     session_id = request.sid
     client_type = 'web'
+    # Module B: 从 Socket.IO auth 提取 W3C traceparent (跨进程 trace 关联)
+    traceparent = None
     if isinstance(auth, dict):
         client_type = auth.get('client_type', 'web')
-    create_session(session_id, client_type=client_type)
+        traceparent = auth.get('traceparent')
+
+    # Task 13.8: 连接池容量限制
+    with sessions_lock:
+        current_count = len(sessions)
+    if current_count >= Config.MAX_CONCURRENT_SESSIONS:
+        logger.warning(
+            'connection_rejected: server at capacity',
+            extra={
+                'session_id': session_id,
+                'event_type': 'connection_rejected',
+                'metadata': {
+                    'reason': 'at_capacity',
+                    'current': current_count,
+                    'max': Config.MAX_CONCURRENT_SESSIONS,
+                },
+            },
+        )
+        if metrics:
+            metrics.connections_rejected_total.inc()
+        emit('error', {
+            'message': 'Server at capacity. Please try again later.',
+            'code': 'AT_CAPACITY',
+            'retry_after_ms': 5000,
+        })
+        return False  # reject the connection
+
+    session = create_session(session_id, client_type=client_type)
+    # Module B: 把解析后的 trace_id 挂到 session, 后续日志关联用
+    if traceparent and session is not None:
+        parsed_tid = traceparent_to_trace_id(traceparent)
+        if parsed_tid:
+            session['trace_id'] = parsed_tid
     emit('connected', {
         'session_id': session_id,
         'status': 'ready',
         'timestamp': datetime.utcnow().isoformat(),
         'volcengine_ready': bool(Config.VOLC_APP_KEY and Config.VOLC_ACCESS_TOKEN),
     })
-    logger.info("Client connected", extra={
+    log_extra = {
         'session_id': session_id, 'event_type': 'connection',
-        'metadata': {'client_type': client_type}
-    })
+        'metadata': {'client_type': client_type},
+    }
+    if traceparent and session is not None and session.get('trace_id'):
+        log_extra['trace_id'] = session['trace_id']
+        log_extra['metadata']['traceparent'] = traceparent
+    logger.info("Client connected", extra=log_extra)
 
 
 @socketio.on('disconnect')
@@ -361,6 +472,19 @@ def handle_start_recording(data=None):
     session['volc_session'] = volc_sess
     volc_sess.start()
 
+    # F1: 等待 WSS 握手 + full request 发送完成，再告知客户端
+    ready = volc_sess.wait_until_ready(timeout=5.0)
+    if not ready:
+        emit('error', {
+            'message': '火山引擎连接超时，请重试',
+            'source': 'volcengine',
+            'code': 'HANDSHAKE_TIMEOUT',
+        })
+        logger.error("Volcengine handshake timeout", extra={
+            'session_id': session_id, 'event_type': 'handshake_timeout',
+        })
+        return
+
     session['status'] = 'recording'
     emit('recording_started', {
         'session_id': session_id,
@@ -382,6 +506,18 @@ def handle_audio_data(data):
         emit('error', {'message': 'Session not found'})
         return
 
+    # Task 13.7: 音频数据速率限制 (per-session token bucket)
+    if rate_limiter and not rate_limiter.is_allowed(
+        f'audio:{session_id}',
+        rate=Config.RATE_LIMIT_AUDIO_RATE,
+        burst=Config.RATE_LIMIT_AUDIO_BURST,
+    ):
+        emit('rate_limited', {
+            'event': 'audio_data',
+            'retry_after_ms': 100,
+        }, to=session_id)
+        return
+
     session['status'] = 'transcribing'
     audio_bytes = len(data) if data else 0
     session['metrics']['audio_bytes'] += audio_bytes
@@ -400,23 +536,27 @@ def handle_audio_data(data):
             })
             metrics.transcription_errors_total.labels(error_type='send_audio').inc()
 
-    avg_latency = 0
-    if session['metrics']['latencies']:
-        avg_latency = round(
-            sum(session['metrics']['latencies']) / len(session['metrics']['latencies']), 2
-        )
-
-    emit('session_status', {
-        'status': session['status'],
-        'metrics': {
-            'audio_bytes': session['metrics']['audio_bytes'],
-            'transcription_chars': session['metrics']['transcription_chars'],
-            'chunks_processed': session['metrics']['chunks_processed'],
-            'avg_latency': avg_latency,
-            'volc_frames_sent': session['metrics']['volc_frames_sent'],
-            'speaker_count': session['metrics']['speaker_count'],
-        },
-    })
+    # F6: 节流 session_status，每 2s 最多推送一次
+    METRICS_EMIT_INTERVAL = 2.0
+    now = time.time()
+    if now - session['last_metrics_emit_at'] >= METRICS_EMIT_INTERVAL:
+        session['last_metrics_emit_at'] = now
+        avg_latency = 0
+        if session['metrics']['latencies']:
+            avg_latency = round(
+                sum(session['metrics']['latencies']) / len(session['metrics']['latencies']), 2
+            )
+        emit('session_status', {
+            'status': session['status'],
+            'metrics': {
+                'audio_bytes': session['metrics']['audio_bytes'],
+                'transcription_chars': session['metrics']['transcription_chars'],
+                'chunks_processed': session['metrics']['chunks_processed'],
+                'avg_latency': avg_latency,
+                'volc_frames_sent': session['metrics']['volc_frames_sent'],
+                'speaker_count': session['metrics']['speaker_count'],
+            },
+        })
 
 
 @socketio.on('stop_recording')
@@ -435,7 +575,10 @@ def handle_stop_recording():
         except Exception:
             pass
 
-    session['status'] = 'completed'
+    # F7: 不立即设 completed，而是保持 transcribing 等服务端 final 到来
+    # recording_stopped 仍然立即发出（告知客户端录音已停），但 status 保持 transcribing
+    # 客户端在收到 recording_stopped 后继续等待最后一条 transcription_result(is_final=True)
+    session['status'] = 'transcribing'
     avg_latency = 0
     if session['metrics']['latencies']:
         avg_latency = round(
@@ -491,6 +634,87 @@ def handle_get_metrics():
 
 
 # ============================================================================
+# 同声传译 2.0 (Simultaneous Interpretation 2.0) — SocketIO events
+# 接收源文本 → 调用火山引擎翻译 API → 推送 translation_result / translation_error
+# ============================================================================
+@socketio.on('translate_text')
+def handle_translate_text(data=None):
+    """
+    客户端 → 服务端: 请求翻译一段文本
+    data: { text: str, source_lang: 'zh', target_lang: 'en' }
+    服务端 → 客户端: translation_result / translation_error
+    """
+    if not metrics:
+        emit('translation_error', {'message': 'Server not ready', 'source': 'translation'})
+        return
+    session_id = request.sid
+
+    # Task 13.7: 翻译请求速率限制 (per-session)
+    if rate_limiter and not rate_limiter.is_allowed(
+        f'translate:{session_id}',
+        rate=Config.RATE_LIMIT_TRANSLATE_RATE,
+        burst=Config.RATE_LIMIT_TRANSLATE_BURST,
+    ):
+        emit('rate_limited', {
+            'event': 'translate_text',
+            'retry_after_ms': 100,
+        }, to=session_id)
+        return
+
+    from translation import (
+        translate_once,
+        MisconfiguredError,
+        InvalidLanguagePairError,
+        TranslationError,
+    )
+
+    text = (data or {}).get('text', '')
+    src = (data or {}).get('source_lang', 'zh')
+    tgt = (data or {}).get('target_lang', 'en')
+
+    try:
+        result = translate_once(text=text, source_lang=src, target_lang=tgt, session_id=session_id)
+        emit('translation_result', {
+            'text': result['translation'],
+            'source_language': result['source_language'],
+            'target_language': result['target_language'],
+            'latency_ms': result['latency_ms'],
+            'cached': result.get('cached', False),
+            'is_final': True,
+            'source_text': text,
+            'timestamp': datetime.utcnow().isoformat(),
+        })
+        logger.info("Translation success", extra={
+            'session_id': session_id, 'event_type': 'translation_success',
+            'metadata': {
+                'source_lang': src, 'target_lang': tgt,
+                'source_len': len(text), 'target_len': len(result['translation']),
+                'latency_ms': result['latency_ms'], 'cached': result.get('cached', False),
+            }
+        })
+    except MisconfiguredError as e:
+        emit('translation_error', {'message': str(e), 'source': 'translation', 'code': 'MISCONFIGURED'})
+        logger.warning("Translation misconfigured", extra={
+            'session_id': session_id, 'event_type': 'translation_misconfigured',
+        })
+    except InvalidLanguagePairError as e:
+        emit('translation_error', {'message': str(e), 'source': 'translation', 'code': 'INVALID_PAIR'})
+    except TranslationError as e:
+        emit('translation_error', {'message': str(e), 'source': 'translation', 'code': 'API_ERROR'})
+        logger.error(f"Translation error: {e}", extra={
+            'session_id': session_id, 'event_type': 'translation_error',
+        })
+
+
+@socketio.on('translation_clear_cache')
+def handle_translation_clear_cache(data=None):
+    """客户端请求清空翻译缓存 (切换语言对时)"""
+    from translation import clear_cache
+    clear_cache()
+    emit('translation_cache_cleared', {'cleared': True, 'timestamp': datetime.utcnow().isoformat()})
+
+
+# ============================================================================
 # REST API
 # ============================================================================
 @app.route('/')
@@ -516,6 +740,45 @@ def health():
         'active_sessions': len(sessions),
         'timestamp': datetime.utcnow().isoformat(),
     }
+
+
+@app.route('/api/translate/stream', methods=['POST'])
+def translate_stream_endpoint():
+    """
+    同声传译 2.0 REST 入口 (POST JSON, 返回 translation JSON).
+    推荐生产环境使用 SocketIO 'translate_text' 事件获得流式体验;
+    本 REST endpoint 适合调试 / curl 测试.
+
+    Body: {"text": "...", "source_lang": "zh", "target_lang": "en"}
+    """
+    from translation import (
+        translate_once,
+        MisconfiguredError,
+        InvalidLanguagePairError,
+        TranslationError,
+    )
+
+    data = request.get_json(silent=True) or {}
+    text = data.get('text', '')
+    src = data.get('source_lang', 'zh')
+    tgt = data.get('target_lang', 'en')
+    try:
+        result = translate_once(text=text, source_lang=src, target_lang=tgt)
+        return {
+            'ok': True,
+            'text': result['translation'],
+            'source_language': result['source_language'],
+            'target_language': result['target_language'],
+            'latency_ms': result['latency_ms'],
+            'cached': result.get('cached', False),
+            'timestamp': datetime.utcnow().isoformat(),
+        }
+    except MisconfiguredError as e:
+        return {'ok': False, 'error': 'misconfigured', 'message': str(e)}, 503
+    except InvalidLanguagePairError as e:
+        return {'ok': False, 'error': 'invalid_pair', 'message': str(e)}, 400
+    except TranslationError as e:
+        return {'ok': False, 'error': 'api_error', 'message': str(e)}, 502
 
 
 @app.route('/metrics/summary')
@@ -547,5 +810,119 @@ def metrics_summary():
             'model': Config.VOLC_MODEL_NAME,
             'configured': bool(Config.VOLC_APP_KEY and Config.VOLC_ACCESS_TOKEN),
         },
+        'file_asr': {
+            'configured': bool(Config.VOLC_FILE_ASR_APP_ID and Config.VOLC_FILE_ASR_TOKEN),
+            'cluster': Config.VOLC_FILE_ASR_CLUSTER,
+        },
+        'tts': {
+            'requests_total': safe_value(metrics.tts_requests_total) if metrics else 0,
+            'latency_avg_seconds': (
+                safe_observe_sum(metrics.tts_latency_seconds) / max(safe_observe_sum(metrics.tts_latency_seconds, 'count'), 1)
+            ) if metrics else 0,
+            'configured': bool(os.environ.get('VOLC_TTS_APP_ID') and os.environ.get('VOLC_TTS_TOKEN')),
+        },
         'timestamp': datetime.utcnow().isoformat(),
     }
+
+
+# ============================================================================
+# SeedTTS 2.0 REST API (server/tts.py 封装)
+# ============================================================================
+@app.route('/api/tts/synthesize', methods=['POST'])
+def api_tts_synthesize():
+    """
+    POST { text, voice?, speed?, pitch?, volume?, audio_format?, sample_rate? }
+    → 200 audio/* bytes  |  4xx JSON {error}  |  5xx JSON {error}
+    """
+    # Task 13.7: TTS 速率限制 (per-IP, 用 remote_addr 做 bucket key)
+    if rate_limiter:
+        client_ip = request.remote_addr or 'unknown'
+        if not rate_limiter.is_allowed(
+            f'tts:{client_ip}',
+            rate=Config.RATE_LIMIT_TTS_RATE,
+            burst=Config.RATE_LIMIT_TTS_BURST,
+        ):
+            logger.warning('TTS rate limited', extra={
+                'event_type': 'tts_rate_limited',
+                'metadata': {'client_ip': client_ip},
+            })
+            return jsonify({
+                'error': 'Too many TTS requests. Please slow down.',
+                'retry_after_ms': 200,
+            }), 429
+
+    try:
+        payload = request.get_json(silent=True) or {}
+    except Exception:
+        return jsonify({'error': 'invalid JSON body'}), 400
+    text = (payload.get('text') or '').strip()
+    if not text:
+        return jsonify({'error': 'text is required'}), 400
+
+    try:
+        audio = tts_module.synthesize(
+            text=text,
+            voice=payload.get('voice'),
+            speed=float(payload.get('speed', 1.0) or 1.0),
+            pitch=float(payload.get('pitch', 1.0) or 1.0),
+            volume=float(payload.get('volume', 1.0) or 1.0),
+            audio_format=payload.get('audio_format') or 'mp3',
+            sample_rate=int(payload.get('sample_rate', 24000) or 24000),
+        )
+    except tts_module.ValidationError as e:
+        return jsonify({'error': e.message, 'field': e.field}), 400
+    except tts_module.MisconfiguredError as e:
+        logger.error('TTS misconfigured', extra={
+            'event_type': 'tts_misconfigured',
+            'metadata': {'missing': e.missing},
+        })
+        return jsonify({'error': e.message, 'missing': e.missing}), 503
+    except tts_module.TTSError as e:
+        return jsonify({'error': e.message, 'status_code': e.status_code}), \
+            (e.status_code if 400 <= e.status_code < 600 else 502)
+    except Exception as e:
+        logger.exception('TTS synthesize unexpected error')
+        return jsonify({'error': f'unexpected: {e}'}), 500
+
+    fmt = (payload.get('audio_format') or 'mp3').lower()
+    mime = {'mp3': 'audio/mpeg', 'pcm': 'audio/pcm', 'wav': 'audio/wav',
+            'ogg': 'audio/ogg', 'opus': 'audio/ogg'}.get(fmt, 'application/octet-stream')
+    return Response(audio, mimetype=mime, headers={
+        'Content-Length': str(len(audio)),
+        'Cache-Control': 'no-store',
+        'X-TTS-Format': fmt,
+    })
+
+
+@app.route('/api/tts/voices', methods=['GET'])
+def api_tts_voices():
+    """
+    GET → { data: [{id, name, gender, sample_rate}, ...], degraded, source }
+    """
+    result = tts_module.safe_list_voices()
+    return jsonify(result)
+
+
+
+# ============================================================================
+# 声音复刻 2.0 REST API (server/voice_cloning.py 封装) — 2026-06-27
+# ============================================================================
+# 凭证缺失时不挂载 — 让现有实时转写功能不被新模块连累
+try:
+    from voice_cloning import (
+        register_voice_cloning_routes as _register_voice_cloning,
+        make_voice_cloning_client_from_env as _make_voice_client,
+        VoiceCloningConfigError as _VoiceCloningConfigError,
+    )
+    try:
+        _register_voice_cloning(app, client_factory=_make_voice_client)
+        if logger is not None:
+            logger.info("声音复刻 2.0 路由已挂载", extra={'event_type': 'voice_cloning_mounted'})
+    except _VoiceCloningConfigError as e:
+        if logger is not None:
+            logger.warning(
+                f"声音复刻 2.0 凭证缺失, /api/voice/* 未挂载: {e}",
+                extra={'event_type': 'voice_cloning_disabled'},
+            )
+except ImportError as e:
+    logger.warning(f"voice_cloning 模块未加载: {e}")
