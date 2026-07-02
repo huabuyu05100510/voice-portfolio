@@ -123,7 +123,7 @@ export const FileTaskList: React.FC<FileTaskListProps> = React.memo((p) => {
                   </span>
                 )}
               </div>
-              {status === 'running' && t.progress != null && (
+              {(status === 'running' || status === 'uploading') && t.progress != null && (
                 <div
                   className="file-task-progress"
                   role="progressbar"

@@ -233,7 +233,7 @@ export default RealtimeChat;
 export function defaultRealtimeWsUrl(): string {
   const env = (import.meta as any).env ?? {};
   if (env.VITE_REALTIME_WS_URL) return env.VITE_REALTIME_WS_URL as string;
-  const base = env.VITE_WS_URL ?? 'http://localhost:5001';
+  const base = env.VITE_WS_URL ?? 'http://localhost:5000';
   if (base.startsWith('ws://') || base.startsWith('wss://')) return `${base}/api/realtime`;
   if (base.startsWith('http://')) return `ws://${base.slice('http://'.length)}/api/realtime`;
   if (base.startsWith('https://')) return `wss://${base.slice('https://'.length)}/api/realtime`;

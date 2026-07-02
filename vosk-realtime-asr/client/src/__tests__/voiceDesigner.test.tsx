@@ -117,10 +117,13 @@ describe('VoiceDesigner', () => {
   it('空文本点 "试听" 不发请求 + 显示提示', async () => {
     const fetchSpy = vi.spyOn(global, 'fetch');
     render(<VoiceDesigner />);
+    // loadPresets + loadSeedVoices 在 mount 时发起 2 次 fetch, 忽略
+    const baseCalls = fetchSpy.mock.calls.length;
     const btn = screen.getByRole('button', { name: '试听生成' });
     fireEvent.click(btn);
     await waitFor(() => {
-      expect(fetchSpy).not.toHaveBeenCalled();
+      // "试听" 不应触发额外的 fetch (客户端校验拒绝)
+      expect(fetchSpy.mock.calls.length).toBe(baseCalls);
     });
     // 显示错误提示
     expect(screen.getByText(/请输入|文本不能为空|文本/)).toBeTruthy();
@@ -128,9 +131,13 @@ describe('VoiceDesigner', () => {
 
   it('"试听" 触发 POST /api/voice-design/generate + 显示 loading', async () => {
     let resolveFetch: any;
-    vi.spyOn(global, 'fetch').mockImplementation(
-      () => new Promise((resolve) => { resolveFetch = resolve; }),
-    );
+    vi.spyOn(global, 'fetch').mockImplementation((url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/presets') || urlStr.includes('/seed-voices')) {
+        return Promise.resolve(new Response(JSON.stringify({ presets: [], seed_voices: [] }), { status: 200 }));
+      }
+      return new Promise((resolve) => { resolveFetch = resolve; });
+    });
     render(<VoiceDesigner />);
     fireEvent.change(screen.getByPlaceholderText('输入要合成的文本 (最多 300 字)'), {
       target: { value: '测试文本' },
@@ -156,9 +163,13 @@ describe('VoiceDesigner', () => {
     const fakeResp: VoiceDesignResult = {
       ok: true, audio_base64: SAMPLE_AUDIO_B64, duration_ms: 1000, sample_rate: 24000,
     };
-    vi.spyOn(global, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify(fakeResp), { status: 200 }),
-    );
+    vi.spyOn(global, 'fetch').mockImplementation((url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/presets') || urlStr.includes('/seed-voices')) {
+        return Promise.resolve(new Response(JSON.stringify({ presets: [], seed_voices: [] }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify(fakeResp), { status: 200 }));
+    });
     render(<VoiceDesigner />);
     fireEvent.change(screen.getByPlaceholderText('输入要合成的文本 (最多 300 字)'), {
       target: { value: '测试' },
@@ -173,11 +184,15 @@ describe('VoiceDesigner', () => {
   });
 
   it('点 "保存音色" → 弹出表单 (音色名 + 描述)', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({
+    vi.spyOn(global, 'fetch').mockImplementation((url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/presets') || urlStr.includes('/seed-voices')) {
+        return Promise.resolve(new Response(JSON.stringify({ presets: [], seed_voices: [] }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({
         ok: true, audio_base64: SAMPLE_AUDIO_B64, duration_ms: 1000, sample_rate: 24000,
-      }), { status: 200 }),
-    );
+      }), { status: 200 }));
+    });
     render(<VoiceDesigner />);
     fireEvent.change(screen.getByPlaceholderText('输入要合成的文本 (最多 300 字)'), {
       target: { value: '测试' },
@@ -199,11 +214,15 @@ describe('VoiceDesigner', () => {
   });
 
   it('保存音色: 缺 voice_name → 显示提示', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({
+    vi.spyOn(global, 'fetch').mockImplementation((url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/presets') || urlStr.includes('/seed-voices')) {
+        return Promise.resolve(new Response(JSON.stringify({ presets: [], seed_voices: [] }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({
         ok: true, audio_base64: SAMPLE_AUDIO_B64, duration_ms: 1000, sample_rate: 24000,
-      }), { status: 200 }),
-    );
+      }), { status: 200 }));
+    });
     render(<VoiceDesigner />);
     fireEvent.change(screen.getByPlaceholderText('输入要合成的文本 (最多 300 字)'), {
       target: { value: '测试' },
@@ -230,11 +249,22 @@ describe('VoiceDesigner', () => {
 
   it('保存音色成功 → 显示 voice_id', async () => {
     const fetchSpy = vi.spyOn(global, 'fetch');
-    fetchSpy.mockResolvedValueOnce(
-      new Response(JSON.stringify({
+    fetchSpy.mockImplementation((url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/presets')) {
+        return Promise.resolve(new Response(JSON.stringify({ presets: [] }), { status: 200 }));
+      }
+      if (urlStr.includes('/seed-voices')) {
+        return Promise.resolve(new Response(JSON.stringify({ seed_voices: [] }), { status: 200 }));
+      }
+      if (urlStr.includes('/save')) {
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, voice_id: 'S_user_xyz' }), { status: 200 }));
+      }
+      // /generate
+      return Promise.resolve(new Response(JSON.stringify({
         ok: true, audio_base64: SAMPLE_AUDIO_B64, duration_ms: 1000, sample_rate: 24000,
-      }), { status: 200 }),
-    );
+      }), { status: 200 }));
+    });
     render(<VoiceDesigner />);
     fireEvent.change(screen.getByPlaceholderText('输入要合成的文本 (最多 300 字)'), {
       target: { value: '测试' },
@@ -253,10 +283,6 @@ describe('VoiceDesigner', () => {
     fireEvent.change(screen.getByLabelText('音色名'), {
       target: { value: '我的音色' },
     });
-    // 第二个 fetch (save)
-    fetchSpy.mockResolvedValueOnce(
-      new Response(JSON.stringify({ ok: true, voice_id: 'S_user_xyz' }), { status: 200 }),
-    );
     const confirmBtn = screen.getByRole('button', { name: '确认保存' });
     fireEvent.click(confirmBtn);
     await waitFor(() => {
@@ -273,11 +299,15 @@ describe('VoiceDesigner', () => {
   });
 
   it('生成失败 → 显示错误消息', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({
+    vi.spyOn(global, 'fetch').mockImplementation((url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/presets') || urlStr.includes('/seed-voices')) {
+        return Promise.resolve(new Response(JSON.stringify({ presets: [], seed_voices: [] }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({
         ok: false, error_code: -2, error_message: 'upstream timeout',
-      }), { status: 502 }),
-    );
+      }), { status: 502 }));
+    });
     render(<VoiceDesigner />);
     fireEvent.change(screen.getByPlaceholderText('输入要合成的文本 (最多 300 字)'), {
       target: { value: '测试' },

@@ -352,14 +352,16 @@ def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000,
 # Flask 路由注册
 # ============================================================================
 def register_voice_cloning_routes(flask_app, *,
-                                  client_factory: Callable[[], VoiceCloningClient]) -> None:
+                                  client_factory: Callable[[], VoiceCloningClient],
+                                  strict: bool = True) -> None:
     """
     把 4 个 endpoint 挂到 flask_app.
 
-    启动期会调 client_factory() 一次以验证凭证 (fail-fast).
+    strict=False 时跳过启动期 fail-fast (允许凭证缺失时依然注册路由, 调用时再报错).
     """
     # 启动期 fail-fast — 凭证缺失立刻报错, 避免线上 401
-    client_factory()
+    if strict:
+        client_factory()
 
     from flask import request, jsonify
 

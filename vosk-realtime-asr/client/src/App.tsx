@@ -132,7 +132,15 @@ useEffect(() => {
   }, [ws.connectionStatus, status, dbg]);
 
   // ----- Conversation hooks (always mounted, dormant until mode switches) -----
-  const rt = useRealtimeConversation({ url: defaultRealtimeWsUrl(), autoConnect: false, autoCapture: false });
+  // Sprint 19: use Socket.IO transport so the browser routes through the
+  // existing Flask-SocketIO backend which proxies to Volcengine Realtime WSS.
+  const rt = useRealtimeConversation({
+    url: defaultRealtimeWsUrl(),
+    transport: 'socketio',
+    socket: ws.socket,
+    autoConnect: false,
+    autoCapture: false,
+  });
 
   // Auto-connect only when in conversation mode, disconnect on leave
   useEffect(() => {

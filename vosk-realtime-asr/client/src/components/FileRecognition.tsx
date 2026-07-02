@@ -22,40 +22,26 @@ export interface FileRecognitionProps {
 }
 
 export const FileRecognition: React.FC<FileRecognitionProps> = React.memo((p) => {
-  const fileAsr = useFileAsr({ dispatch: p.dispatch, pollIntervalMs: 2000 });
-  // 用 ref 缓存 fileUrl 以便 retry
-  const fileUrlsRef = React.useRef<Map<string, string>>(new Map());
-  const onFileUrlChange = p.onFileUrlChange;
-  React.useEffect(() => {
-    return () => {
-      // 卸载时清空 objectURL
-      for (const url of fileUrlsRef.current.values()) {
-        try { URL.revokeObjectURL(url); } catch { /* ignore */ }
-      }
-      fileUrlsRef.current.clear();
-    };
-  }, []);
+  const fileRef = React.useRef<Map<string, File>>(new Map());
+  const fileAsr = useFileAsr({ dispatch: p.dispatch, pollIntervalMs: 2000, fileRef });
 
   const onSubmit = async (meta: FileSubmitMeta) => {
-    fileUrlsRef.current.set(meta.file_url, meta.file_url);
-    const task = await fileAsr.submit(meta.file_url, {
+    const task = await fileAsr.submit(meta.file, {
       filename: meta.filename,
       size_bytes: meta.size_bytes,
       format: meta.format,
     });
-    // 用 task.local_id -> file_url 反向映射
     if (task.local_id) {
-      fileUrlsRef.current.set(task.local_id, meta.file_url);
-      onFileUrlChange?.(task.local_id, meta.file_url);
+      fileRef.current.set(task.local_id, meta.file);
     }
   };
 
   const onRetry = (local_id: string) => {
-    const url = fileUrlsRef.current.get(local_id);
-    if (url) {
-      void fileAsr.retry(local_id, url);
+    const f = fileRef.current.get(local_id);
+    if (f) {
+      void fileAsr.retry(local_id, '');  // retry will re-fetch from fileRef
     } else {
-      p.onError?.('无法重试: 文件 URL 已失效, 请重新上传');
+      p.onError?.('无法重试: 文件引用已失效, 请重新上传');
     }
   };
 

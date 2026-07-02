@@ -4414,14 +4414,20 @@
 /* ==== Grid (左中右三栏) ==== */
 .vd-grid {
   display: grid;
-  grid-template-columns: 320px 1fr 460px;
+  grid-template-columns: 280px 1fr minmax(300px, 420px);
   gap: 16px;
   flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.vd-grid > * {
+  min-width: 0;
   min-height: 0;
 }
 
 @media (max-width: 1280px) {
-  .vd-grid { grid-template-columns: 280px 1fr 380px; }
+  .vd-grid { grid-template-columns: 240px 1fr minmax(260px, 360px); }
 }
 @media (max-width: 1024px) {
   .vd-grid { grid-template-columns: 1fr; grid-auto-rows: auto; }
@@ -4759,6 +4765,8 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  overflow: auto;
+  min-height: 0;
 }
 
 .vd-waveform {
@@ -5577,12 +5585,366 @@
 }
 
 /* ==== 减动效 ==== */
+/* ===================================================================
+ * File Recognition 2.0 — 文件识别面板
+ * =================================================================== */
+.file-recognition {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 0;
+}
+
+.file-recognition-header {
+  margin-bottom: 4px;
+}
+.file-recognition-header h3 {
+  margin: 0 0 4px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-1, #f5f5f7);
+}
+.file-recognition-header p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-3, #8b8b99);
+}
+
+/* --- FileUploader --- */
+.file-uploader {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 36px 24px;
+  border: 2px dashed var(--border-2, rgba(255,255,255,0.16));
+  border-radius: 12px;
+  background: var(--bg-1, #13131f);
+  cursor: pointer;
+  transition: border-color 200ms ease, background 200ms ease, box-shadow 200ms ease;
+  user-select: none;
+  outline: none;
+}
+.file-uploader:focus-visible {
+  box-shadow: 0 0 0 2px var(--brand-500, #00d4ff);
+}
+.file-uploader:hover:not(.is-disabled) {
+  border-color: var(--brand-300, rgba(0,212,255,0.48));
+  background: var(--bg-2, #1d1d2e);
+}
+.file-uploader.is-drag-active {
+  border-color: var(--brand-500, #00d4ff);
+  background: var(--brand-50, rgba(0,212,255,0.08));
+  box-shadow: 0 0 0 4px var(--brand-50, rgba(0,212,255,0.08));
+}
+.file-uploader.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.file-uploader.is-busy {
+  cursor: wait;
+}
+
+.file-uploader-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: var(--bg-2, #1d1d2e);
+  color: var(--text-3, #8b8b99);
+  transition: color 200ms ease, background 200ms ease;
+}
+.file-uploader.is-drag-active .file-uploader-icon {
+  color: var(--brand-500, #00d4ff);
+  background: var(--brand-100, rgba(0,212,255,0.16));
+}
+
+.file-uploader-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2.5px solid var(--border-2, rgba(255,255,255,0.16));
+  border-top-color: var(--brand-500, #00d4ff);
+  border-radius: 50%;
+  animation: file-uploader-spin 0.7s linear infinite;
+}
+@keyframes file-uploader-spin {
+  to { transform: rotate(360deg); }
+}
+
+.file-uploader-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.file-uploader-text strong {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-2, #c5c5d0);
+}
+.file-uploader.is-drag-active .file-uploader-text strong {
+  color: var(--brand-500, #00d4ff);
+}
+
+.file-uploader-hint {
+  font-size: 12px;
+  color: var(--text-4, #5a5a68);
+}
+
+/* --- FileTaskList --- */
+.file-task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.file-task-list.is-empty {
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  border-radius: 12px;
+  background: var(--bg-1, #13131f);
+  border: 1px solid var(--border-1, rgba(255,255,255,0.08));
+}
+.file-task-list.is-empty p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-4, #5a5a68);
+  text-align: center;
+}
+
+/* --- FileTask — card --- */
+.file-task {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--bg-1, #13131f);
+  border: 1px solid var(--border-1, rgba(255,255,255,0.08));
+  transition: border-color 150ms ease, background 150ms ease;
+}
+.file-task:hover {
+  border-color: var(--border-2, rgba(255,255,255,0.16));
+}
+.file-task.is-done {
+  cursor: pointer;
+}
+.file-task.is-done:hover {
+  background: var(--bg-2, #1d1d2e);
+}
+.file-task.is-failed {
+  border-color: rgba(239,68,68,0.25);
+}
+
+.file-task-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--bg-2, #1d1d2e);
+  color: var(--text-3, #8b8b99);
+}
+.file-task.is-done .file-task-icon {
+  color: var(--success-500, #10b981);
+  background: rgba(16,185,129,0.1);
+}
+.file-task.is-failed .file-task-icon {
+  color: var(--danger-500, #ef4444);
+  background: rgba(239,68,68,0.1);
+}
+.file-task.is-running .file-task-icon,
+.file-task.is-submitted .file-task-icon,
+.file-task.is-uploading .file-task-icon {
+  color: var(--brand-500, #00d4ff);
+  background: var(--brand-50, rgba(0,212,255,0.08));
+}
+
+.file-task-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.file-task-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-1, #f5f5f7);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-task-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-4, #5a5a68);
+}
+
+.file-task-format {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-2, #1d1d2e);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-3, #8b8b99);
+}
+
+.file-task-count {
+  color: var(--text-3, #8b8b99);
+}
+
+.file-task-elapsed {
+  font-variant-numeric: tabular-nums;
+}
+
+.file-task-progress {
+  width: 100%;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-2, #1d1d2e);
+  overflow: hidden;
+  margin-top: 2px;
+}
+.file-task-progress-bar {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--brand-600, #00a8cc), var(--brand-500, #00d4ff));
+  transition: width 400ms ease;
+  animation: file-progress-pulse 1.6s ease-in-out infinite;
+}
+@keyframes file-progress-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.7; }
+}
+
+.file-task-error {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--danger-500, #ef4444);
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.file-task-status {
+  flex-shrink: 0;
+}
+.file-task-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.file-task-badge.is-idle,
+.file-task-badge.is-cancelled {
+  background: var(--bg-2, #1d1d2e);
+  color: var(--text-4, #5a5a68);
+}
+.file-task-badge.is-uploading,
+.file-task-badge.is-submitted {
+  background: var(--brand-50, rgba(0,212,255,0.08));
+  color: var(--brand-500, #00d4ff);
+}
+.file-task-badge.is-running {
+  background: var(--brand-100, rgba(0,212,255,0.16));
+  color: var(--brand-500, #00d4ff);
+}
+.file-task-badge.is-done {
+  background: rgba(16,185,129,0.12);
+  color: var(--success-500, #10b981);
+}
+.file-task-badge.is-failed {
+  background: rgba(239,68,68,0.12);
+  color: var(--danger-500, #ef4444);
+}
+
+.file-task-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+}
+.file-task-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-1, rgba(255,255,255,0.08));
+  background: transparent;
+  color: var(--text-3, #8b8b99);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+  white-space: nowrap;
+}
+.file-task-btn:hover {
+  background: var(--bg-2, #1d1d2e);
+  color: var(--text-1, #f5f5f7);
+}
+.file-task-btn.is-retry {
+  border-color: var(--brand-300, rgba(0,212,255,0.48));
+  color: var(--brand-500, #00d4ff);
+}
+.file-task-btn.is-retry:hover {
+  background: var(--brand-50, rgba(0,212,255,0.08));
+}
+.file-task-btn.is-open {
+  border-color: rgba(16,185,129,0.4);
+  color: var(--success-500, #10b981);
+}
+.file-task-btn.is-open:hover {
+  background: rgba(16,185,129,0.1);
+}
+
+/* --- Footer --- */
+.file-recognition-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+.file-recognition-clear {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border-1, rgba(255,255,255,0.08));
+  background: transparent;
+  color: var(--text-4, #5a5a68);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+.file-recognition-clear:hover {
+  background: var(--bg-2, #1d1d2e);
+  color: var(--text-2, #c5c5d0);
+}
+
+/* ===================================================================
+ * Podcast Generator styles
+ * =================================================================== */
+
 @media (prefers-reduced-motion: reduce) {
   .vd-preset-card,
   .vd-generate-btn,
   .vd-save-btn,
-  .rt-mode-fab-group .rt-mode-switch {
+  .rt-mode-fab-group .rt-mode-switch,
+  .file-task-progress-bar {
     transition: none;
+    animation: none;
   }
   .vd-modal-backdrop { animation: none; }
   .vd-modal { animation: none; }

@@ -171,7 +171,7 @@ describe('useFileAsr / retry', () => {
 });
 
 describe('useFileAsr / cancel', () => {
-  it('cancel 从列表移除任务', async () => {
+  it('cancel 标记为 cancelled 而非移除任务', async () => {
     mockFetch.mockResolvedValueOnce(
       mockResp({ task_id: 'tid-c', status: 'queued' }),
     );
@@ -183,7 +183,8 @@ describe('useFileAsr / cancel', () => {
     act(() => {
       result.current.cancel(localId);
     });
-    expect(result.current.tasks).toHaveLength(0);
+    expect(result.current.tasks).toHaveLength(1);
+    expect(result.current.tasks[0].status).toBe('cancelled');
   });
 });
 

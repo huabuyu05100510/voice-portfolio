@@ -42,8 +42,9 @@ export interface VoiceDesignerProps {
 
 export const VoiceDesigner: React.FC<VoiceDesignerProps> = (p) => {
   const {
-    params, isGenerating, lastResult, isSaving, error, savedVoiceId,
+    params, presets, isGenerating, lastResult, isSaving, error, savedVoiceId,
     updateParam, applyPreset, generate, saveVoice, reset,
+    loadPresets, loadSeedVoices,
   } = useVoiceDesign();
 
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -53,11 +54,13 @@ export const VoiceDesigner: React.FC<VoiceDesignerProps> = (p) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
 
-  // 初次加载应用预设
+  // 初次加载应用预设 + 从服务端拉取最新预设 / seed-voices
   useEffect(() => {
     if (p.initialPresetId) {
       applyPreset(p.initialPresetId);
     }
+    void loadPresets();
+    void loadSeedVoices();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -173,7 +176,7 @@ export const VoiceDesigner: React.FC<VoiceDesignerProps> = (p) => {
         {/* ==== 左栏: 参数 + 预设 ==== */}
         <section className="vd-params" aria-label="音色参数">
           {/* 预设 */}
-          <VoiceDesignPresets onApply={applyPreset} />
+          <VoiceDesignPresets onApply={applyPreset} customPresets={presets} />
 
           <fieldset className="vd-fieldset">
             <legend>性别</legend>

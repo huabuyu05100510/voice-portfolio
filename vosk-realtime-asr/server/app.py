@@ -152,6 +152,220 @@ def boot_app():
             'metadata': {'reason': str(e)[:200]},
         })
 
+    # ========================================================================
+    # Realtime Voice WSS proxy via SocketIO (Sprint 19 fix)
+    # Browser connects via SocketIO → server proxies to Volcengine Realtime WSS.
+    # Events:
+    #   realtime_start  → connect to Volcengine WSS, send session.update
+    #   realtime_audio  → forward audio bytes (base64) to Volcengine WSS
+    #   realtime_stop   → close Volcengine WSS
+    #   disconnect      → cleanup
+    # Server pushes Volcengine events back via realtime_event → client.
+    # ========================================================================
+    global _rt_sessions, _rt_sessions_lock
+    _rt_sessions = {}  # sid → ws, thread, config
+    _rt_sessions_lock = threading.Lock()
+
+    @socketio.on('realtime_start')
+    def _on_realtime_start(data=None):
+        sid = request.sid
+        if not Config.VOLC_REALTIME_APP_ID or not Config.VOLC_REALTIME_TOKEN:
+            emit('realtime_event', {
+                'type': 'error',
+                'message': '火山引擎 Realtime 凭证未配置 (VOLC_REALTIME_APP_ID / VOLC_REALTIME_TOKEN)',
+            })
+            logger.warning("Realtime start rejected: credentials missing", extra={
+                'session_id': sid, 'event_type': 'realtime_creds_missing',
+            })
+            return
+
+        # Clean up any existing connection for this sid
+        with _rt_sessions_lock:
+            _cleanup_rt_session(sid)
+
+        try:
+            from websocket import create_connection as _ws_create_connection
+        except ImportError:
+            emit('realtime_event', {
+                'type': 'error',
+                'message': 'websocket-client 未安装',
+            })
+            logger.error("websocket-client not installed", extra={
+                'session_id': sid, 'event_type': 'realtime_wsclient_missing',
+            })
+            return
+
+        # Auth headers for Volcengine Realtime WSS
+        headers = {
+            "Authorization": f"Bearer; {Config.VOLC_REALTIME_TOKEN}",
+            "X-Api-App-Id": Config.VOLC_REALTIME_APP_ID,
+            "X-Api-Resource-Id": "volc.speech.realtime_voice",
+        }
+        ws_url = Config.VOLC_REALTIME_ENDPOINT
+        model = Config.VOLC_REALTIME_MODEL
+
+        def _reader_thread(sid2, ws2, stop_event):
+            """Background thread: read Volcengine WSS events → emit to SocketIO client."""
+            try:
+                while not stop_event.is_set():
+                    try:
+                        ws2.settimeout(0.5)
+                        raw = ws2.recv()
+                    except Exception as e:
+                        err_str = str(e).lower()
+                        if 'timeout' in err_str:
+                            continue
+                        break
+                    if isinstance(raw, (bytes, bytearray)):
+                        raw = raw.decode('utf-8', errors='replace')
+                    try:
+                        obj = json.loads(raw)
+                    except Exception:
+                        continue
+                    # Push to browser client
+                    socketio.emit('realtime_event', obj, to=sid2)
+                    if obj.get('type') == 'error':
+                        logger.warning(f"Volcengine Realtime error: {obj}", extra={
+                            'session_id': sid2, 'event_type': 'realtime_volc_error',
+                        })
+            except Exception as e:
+                logger.warning(f"Realtime reader thread exit: {e}", extra={
+                    'session_id': sid2, 'event_type': 'realtime_reader_exit',
+                })
+            finally:
+                try:
+                    ws2.close()
+                except Exception:
+                    pass
+
+        try:
+            ws = _ws_create_connection(ws_url, header=headers, timeout=10)
+        except Exception as e:
+            logger.error(f"Realtime WSS connect failed: {e}", extra={
+                'session_id': sid, 'event_type': 'realtime_wss_connect_failed',
+                'metadata': {'endpoint': ws_url, 'error': str(e)[:200]},
+            })
+            emit('realtime_event', {
+                'type': 'error',
+                'message': f'连接火山引擎 Realtime 失败: {str(e)[:200]}',
+            })
+            return
+
+        # Send session.update
+        session_update = {
+            "type": "session.update",
+            "session": {
+                "model": model,
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "turn_detection": {
+                    "type": "server_vad",
+                    "silence_duration_ms": 400,
+                    "threshold": 0.5,
+                },
+            },
+        }
+        try:
+            ws.send(json.dumps(session_update))
+        except Exception as e:
+            logger.error(f"Realtime session.update failed: {e}", extra={
+                'session_id': sid, 'event_type': 'realtime_session_update_failed',
+            })
+            try:
+                ws.close()
+            except Exception:
+                pass
+            emit('realtime_event', {
+                'type': 'error',
+                'message': f'session.update 发送失败: {str(e)[:200]}',
+            })
+            return
+
+        stop_event = threading.Event()
+        reader = threading.Thread(
+            target=_reader_thread,
+            args=(sid, ws, stop_event),
+            daemon=True,
+            name=f'rt-reader-{sid[:12]}',
+        )
+        reader.start()
+
+        with _rt_sessions_lock:
+            _rt_sessions[sid] = {'ws': ws, 'thread': reader, 'stop_event': stop_event}
+
+        emit('realtime_event', {
+            'type': 'realtime_ready',
+            'model': model,
+            'endpoint': ws_url,
+        })
+        logger.info("Realtime WSS connected", extra={
+            'session_id': sid, 'event_type': 'realtime_wss_connected',
+            'metadata': {'endpoint': ws_url, 'model': model},
+        })
+
+    @socketio.on('realtime_audio')
+    def _on_realtime_audio(data=None):
+        """Forward audio chunk (base64) from browser to Volcengine Realtime WSS."""
+        sid = request.sid
+        with _rt_sessions_lock:
+            sess = _rt_sessions.get(sid)
+        if not sess or not sess.get('ws'):
+            logger.warning("realtime_audio: no WSS session for sid", extra={
+                'session_id': sid, 'event_type': 'realtime_audio_no_session',
+            })
+            return
+        ws = sess['ws']
+        audio_b64 = (data or {}).get('audio', '')
+        if not audio_b64:
+            return
+        try:
+            payload = json.dumps({
+                "type": "input_audio_buffer.append",
+                "audio": audio_b64,
+            })
+            ws.send(payload)
+        except Exception as e:
+            logger.error(f"realtime_audio send failed: {e}", extra={
+                'session_id': sid, 'event_type': 'realtime_audio_send_failed',
+            })
+            emit('realtime_event', {
+                'type': 'error',
+                'message': f'音频发送失败: {str(e)[:200]}',
+            })
+
+    @socketio.on('realtime_stop')
+    def _on_realtime_stop(data=None):
+        """Close the Volcengine Realtime WSS connection."""
+        sid = request.sid
+        with _rt_sessions_lock:
+            sess = _rt_sessions.pop(sid, None)
+        if sess:
+            _cleanup_rt_session_from_dict(sid, sess)
+            emit('realtime_event', {'type': 'realtime_stopped'})
+        logger.info("Realtime session stopped", extra={
+            'session_id': sid, 'event_type': 'realtime_stopped',
+        })
+
+    def _cleanup_rt_session(sid):
+        """Remove and clean up a realtime session (caller holds _rt_sessions_lock)."""
+        sess = _rt_sessions.pop(sid, None)
+        if sess:
+            _cleanup_rt_session_from_dict(sid, sess)
+
+    def _cleanup_rt_session_from_dict(sid, sess):
+        """Clean up a realtime session dict without holding the lock."""
+        stop_event = sess.get('stop_event')
+        if stop_event:
+            stop_event.set()
+        # Give reader thread a moment to exit
+        if sess.get('thread') and sess['thread'].is_alive():
+            sess['thread'].join(timeout=1.0)
+        try:
+            if sess.get('ws'):
+                sess['ws'].close()
+        except Exception:
+            pass
+
 
 def volc_config_safe():
     """用于日志的配置快照 (脱敏)"""
@@ -173,6 +387,10 @@ def shutdown_app():
             except Exception:
                 pass
         sessions.clear()
+    # Clean up realtime voice WSS sessions
+    with _rt_sessions_lock:
+        for sid in list(_rt_sessions.keys()):
+            _cleanup_rt_session(sid)
 
 
 # ============================================================================
@@ -427,14 +645,21 @@ def handle_connect(auth=None):
 
 
 @socketio.on('disconnect')
-def handle_disconnect():
+def handle_disconnect(reason=None):
     if not metrics:
         return
     session_id = request.sid
     end_session(session_id)
-    logger.info("Client disconnected", extra={
-        'session_id': session_id, 'event_type': 'disconnect',
-    })
+    # Clean up realtime voice session if active
+    try:
+        with _rt_sessions_lock:
+            _cleanup_rt_session(session_id)
+    except NameError:
+        pass  # _rt_sessions_lock not yet initialized (boot_app not called)
+    if logger:
+        logger.info("Client disconnected", extra={
+            'session_id': session_id, 'event_type': 'disconnect',
+        })
 
 
 @socketio.on('start_recording')
@@ -907,7 +1132,9 @@ def api_tts_voices():
 # ============================================================================
 # 声音复刻 2.0 REST API (server/voice_cloning.py 封装) — 2026-06-27
 # ============================================================================
-# 凭证缺失时不挂载 — 让现有实时转写功能不被新模块连累
+# 凭证缺失时不挂载真实路由 — 但为 /api/voice/* 提供 503 降级,
+# 避免前端请求甩给 404 误导用户.
+_VOICE_CLONING_MOUNTED = False
 try:
     from voice_cloning import (
         register_voice_cloning_routes as _register_voice_cloning,
@@ -916,6 +1143,7 @@ try:
     )
     try:
         _register_voice_cloning(app, client_factory=_make_voice_client)
+        _VOICE_CLONING_MOUNTED = True
         if logger is not None:
             logger.info("声音复刻 2.0 路由已挂载", extra={'event_type': 'voice_cloning_mounted'})
     except _VoiceCloningConfigError as e:
@@ -925,4 +1153,18 @@ try:
                 extra={'event_type': 'voice_cloning_disabled'},
             )
 except ImportError as e:
-    logger.warning(f"voice_cloning 模块未加载: {e}")
+    if logger:
+        logger.warning(f"voice_cloning 模块未加载: {e}")
+
+if not _VOICE_CLONING_MOUNTED:
+    # 降级路由: 返回 503 而非 404, 告知前端 "服务未配置"
+    @app.route("/api/voice/list", methods=["GET"])
+    @app.route("/api/voice/upload", methods=["POST"])
+    @app.route("/api/voice/train/status", methods=["GET"])
+    @app.route("/api/voice/delete", methods=["DELETE"])
+    @app.route("/api/voice/synthesize", methods=["POST"])
+    def _voice_cloning_disabled():
+        return jsonify({
+            "error": "voice_cloning_not_configured",
+            "message": "声音复刻凭证未配置 (VOLC_VOICE_CLONE_API_KEY 或 VOLC_VOICE_CLONE_APP_ID+TOKEN)",
+        }), 503

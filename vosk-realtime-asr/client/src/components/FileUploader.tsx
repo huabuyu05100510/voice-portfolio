@@ -22,6 +22,7 @@ export interface FileSubmitMeta {
   size_bytes: number;
   format: string;
   file_url: string;
+  file: File;
   duration_sec?: number;
 }
 
@@ -86,6 +87,7 @@ export const FileUploader: React.FC<FileUploaderProps> = (p) => {
           size_bytes: file.size,
           format: check.format,
           file_url,
+          file,
           duration_sec,
         });
         setTimeout(() => URL.revokeObjectURL(file_url), 60_000);

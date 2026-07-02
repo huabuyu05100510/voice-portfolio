@@ -4,20 +4,20 @@
  * 端到端实时语音交互的 React hook.
  *
  * 职责:
- *  - 管理 WebSocket 生命周期 (/api/realtime 代理到火山引擎 Realtime Voice)
+ *  - 管理 WebSocket 生命周期 (支持 raw WebSocket / Socket.IO 双 transport)
  *  - 采集麦克风 PCM 16kHz → 编码为 base64 → 发送 input_audio_buffer.append
  *  - 接收服务端 JSON 事件 → dispatch reducer action
  *  - AI 音频 delta → AudioContext 队列播放 (支持打断)
  *  - 用户输入 → VAD 自动检测 / 手按 PTT 两种模式 (本期: server_vad 自动)
  *
- * 设计原则:
- *  - 与 conversationReducer 配合 (state 由 reducer 管理)
- *  - 不持有业务 UI 状态; 仅暴露状态 + 控制句柄
- *  - 错误/断开/重连统一由 hook 处理, 业务侧只关心 dispatch
+ * Transport modes:
+ *  - raw: creates a native WebSocket (used in unit tests via mock WebSocket)
+ *  - socketio: uses an existing Socket.IO connection (emits realtime_* events)
  *
- * Model: MiniMax-M3 (Sprint 13)
+ * Model: MiniMax-M3 (Sprint 13) — Sprint 19: added SocketIO transport
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
+import type { Socket } from 'socket.io-client';
 import {
   conversationReducer,
   initialConversationState,
@@ -33,11 +33,15 @@ export function defaultRealtimeWsUrl(): string {
   return `${protocol}//${window.location.host}/api/realtime`;
 }
 
-export type RealtimeTransport = 'websocket' | 'auto';
+export type RealtimeTransport = 'raw' | 'socketio';
 
 export interface UseRealtimeConversationOptions {
-  /** WebSocket URL, e.g. ws://localhost:5001/api/realtime 或 http://localhost:5001/api/realtime (自动转 ws) */
+  /** WebSocket URL (仅 raw transport 使用), e.g. ws://localhost:5001/api/realtime */
   url: string;
+  /** 传输模式: 'raw' = native WebSocket (测试默认), 'socketio' = Socket.IO proxy */
+  transport?: RealtimeTransport;
+  /** Socket.IO socket 实例 (transport='socketio' 时必传) */
+  socket?: Socket | null;
   /** 自动连接 (默认 true, 若 false 则调用 connect() 才连接) */
   autoConnect?: boolean;
   /** 麦克风采样率 (默认 16000) */
@@ -69,6 +73,8 @@ export function useRealtimeConversation(
 ): UseRealtimeConversationReturn {
   const {
     url,
+    transport = 'raw',
+    socket: io = null,
     autoConnect = true,
     sampleRate = 16000,
     autoCapture = true,
@@ -90,6 +96,8 @@ export function useRealtimeConversation(
   const startedAtRef = useRef<number | null>(null);
   const chunkBufferRef = useRef<Int16Array[]>([]);
   const closedRef = useRef<boolean>(false);
+  // Socket.IO event handler ref (for cleanup)
+  const ioHandlerRef = useRef<((data: any) => void) | null>(null);
 
   // ------------------------------------------------------------------
   // AI audio playback queue
@@ -179,7 +187,7 @@ export function useRealtimeConversation(
         if (total >= chunkBytes) {
           const merged = mergeChunks(chunkBufferRef.current);
           chunkBufferRef.current = [];
-          sendPcmToWs(merged);
+          sendPcm(merged);
         }
       };
     } catch (e) {
@@ -204,7 +212,84 @@ export function useRealtimeConversation(
   }, []);
 
   // ------------------------------------------------------------------
-  // WebSocket lifecycle
+  // Audio sending (dispatched by transport mode)
+  // ------------------------------------------------------------------
+  function sendPcm(pcm: Int16Array) {
+    const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+    const audioB64 = bytesToBase64(bytes);
+
+    if (transport === 'socketio' && io?.connected) {
+      io.emit('realtime_audio', { audio: audioB64 });
+    } else if (transport === 'raw') {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({
+        type: 'input_audio_buffer.append',
+        audio_bytes_b64: audioB64,
+      }));
+    }
+  }
+
+  const sendAudio = useCallback((pcm: Int16Array) => {
+    sendPcm(pcm);
+  }, [transport, io]);
+
+  // ------------------------------------------------------------------
+  // Socket.IO transport connect/disconnect
+  // ------------------------------------------------------------------
+  const connectSocketIO = useCallback(() => {
+    if (!io || !io.connected) {
+      dispatch({ type: 'CONNECT_FAIL', error: 'Socket.IO 未连接' });
+      return;
+    }
+    dispatch({ type: 'CONNECT_START' });
+
+    // Register listener for server → client events
+    const handler = (data: any) => {
+      if (typeof data === 'string') {
+        handleServerEvent(data);
+      } else if (data && typeof data === 'object') {
+        // server sends the event object directly
+        const t = data.type as string;
+        if (t === 'realtime_ready') {
+          const ts = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+          startedAtRef.current = ts;
+          dispatch({ type: 'CONNECT_OPEN', timestamp: ts });
+          void startCapture();
+        } else if (t === 'realtime_stopped') {
+          stopCapture();
+          stopPlayback();
+          dispatch({ type: 'DISCONNECT' });
+        } else if (t === 'error') {
+          dispatch({ type: 'CONNECT_FAIL', error: (data.message as string) || '服务端错误' });
+        } else {
+          // Forward Volcengine events directly (already parsed JSON object)
+          handleServerEvent(JSON.stringify(data));
+        }
+      }
+    };
+    io.on('realtime_event', handler);
+    ioHandlerRef.current = handler;
+
+    // Emit start — server will connect to Volcengine WSS
+    io.emit('realtime_start', {});
+  }, [io, dispatch, startCapture, stopCapture, stopPlayback]);
+
+  const disconnectSocketIO = useCallback(() => {
+    if (io) {
+      io.emit('realtime_stop', {});
+      if (ioHandlerRef.current) {
+        io.off('realtime_event', ioHandlerRef.current);
+        ioHandlerRef.current = null;
+      }
+    }
+    stopCapture();
+    stopPlayback();
+    dispatch({ type: 'DISCONNECT' });
+  }, [io, dispatch, stopCapture, stopPlayback]);
+
+  // ------------------------------------------------------------------
+  // Raw WebSocket lifecycle (backward compat)
   // ------------------------------------------------------------------
   const normalizeUrl = useCallback((u: string) => {
     if (u.startsWith('ws://') || u.startsWith('wss://')) return u;
@@ -213,22 +298,7 @@ export function useRealtimeConversation(
     return u;
   }, []);
 
-  function sendPcmToWs(pcm: Int16Array) {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
-    // 服务端 encode_audio_chunk 期望 raw PCM bytes, 内部 base64 编码
-    ws.send(JSON.stringify({
-      type: 'input_audio_buffer.append',
-      audio_bytes_b64: bytesToBase64(bytes),
-    }));
-  }
-
-  const sendAudio = useCallback((pcm: Int16Array) => {
-    sendPcmToWs(pcm);
-  }, []);
-
-  const connect = useCallback(() => {
+  const connectRaw = useCallback(() => {
     if (closedRef.current && wsRef.current?.readyState === WebSocket.OPEN) return;
     closedRef.current = false;
     const wsUrl = normalizeUrl(url);
@@ -274,23 +344,38 @@ export function useRealtimeConversation(
     }
   }, [url, normalizeUrl, dispatch, startCapture, stopCapture, stopPlayback, state.status]);
 
+  // ------------------------------------------------------------------
+  // Unified connect / disconnect (dispatches by transport mode)
+  // ------------------------------------------------------------------
+  const connect = useCallback(() => {
+    if (transport === 'socketio') {
+      connectSocketIO();
+    } else {
+      connectRaw();
+    }
+  }, [transport, connectSocketIO, connectRaw]);
+
   const disconnect = useCallback(() => {
     closedRef.current = true;
-    try {
-      wsRef.current?.close();
-    } catch { /* ignore */ }
-    wsRef.current = null;
-    stopCapture();
-    stopPlayback();
-    dispatch({ type: 'DISCONNECT' });
-  }, [dispatch, stopCapture, stopPlayback]);
+    if (transport === 'socketio') {
+      disconnectSocketIO();
+    } else {
+      try {
+        wsRef.current?.close();
+      } catch { /* ignore */ }
+      wsRef.current = null;
+      stopCapture();
+      stopPlayback();
+      dispatch({ type: 'DISCONNECT' });
+    }
+  }, [transport, disconnectSocketIO, dispatch, stopCapture, stopPlayback]);
 
   const clear = useCallback(() => {
     dispatch({ type: 'CLEAR' });
   }, [dispatch]);
 
   // ------------------------------------------------------------------
-  // Server event → reducer actions
+  // Server event → reducer actions (shared by both transports)
   // ------------------------------------------------------------------
   function handleServerEvent(raw: string) {
     let obj: any;
@@ -375,11 +460,22 @@ export function useRealtimeConversation(
     }
     return () => {
       closedRef.current = true;
-      try { wsRef.current?.close(); } catch { /* ignore */ }
+      if (transport === 'socketio') {
+        if (ioHandlerRef.current && io) {
+          io.off('realtime_event', ioHandlerRef.current);
+          ioHandlerRef.current = null;
+        }
+      } else {
+        try { wsRef.current?.close(); } catch { /* ignore */ }
+      }
       stopCapture();
       stopPlayback();
     };
   }, [autoConnect]);
+
+  // Update transport method when io connectivity changes (autoConnect already handled above)
+  // If transport is socketio and io becomes available after initial mount, we don't auto-reconnect
+  // (the autoConnect effect only runs once). This is correct behavior.
 
   return useMemo(
     () => ({ state, connect, disconnect, clear, sendAudio, stopPlayback, dispatch }),

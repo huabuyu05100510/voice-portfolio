@@ -287,6 +287,8 @@ export const useVoiceDesign = (): UseVoiceDesignState => {
 
   const generate = useCallback(async (): Promise<VoiceDesignResult | null> => {
     if (inFlightRef.current) return null;
+    // 清掉旧的保存确认, 避免 stale display
+    setSavedVoiceId(null);
     const validationErr = validateClientSide(params);
     if (validationErr) {
       setError(validationErr);
@@ -327,9 +329,9 @@ export const useVoiceDesign = (): UseVoiceDesignState => {
           setError({ field: body.field, message: body.message || '校验失败' });
         } else {
           setError({
-            message: body.error_message || '生成失败',
+            message: body.message || body.error_message || '生成失败',
             error_code: body.error_code,
-            error_message: body.error_message,
+            error_message: body.message || body.error_message,
           });
         }
       }
@@ -379,7 +381,7 @@ export const useVoiceDesign = (): UseVoiceDesignState => {
       if (body.ok && body.voice_id) {
         setSavedVoiceId(body.voice_id);
       } else {
-        setError({ message: body.error_message || '保存失败', error_code: body.error_code });
+        setError({ message: body.message || body.error_message || '保存失败', error_code: body.error_code });
       }
       return body;
     } catch (e: any) {

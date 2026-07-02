@@ -25,6 +25,8 @@ import json
 import logging
 import os
 import time
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
@@ -255,27 +257,159 @@ def build_request_payload(
 # ============================================================================
 # HTTPS 调用 (mockable)
 # ============================================================================
+def _build_auth_headers(config: PodcastConfig) -> Dict[str, str]:
+    """
+    Build authorization headers for upstream Volcengine API.
+    New console: single X-Api-Key header
+    Old console: dual X-Api-App-Key + X-Api-Access-Key headers
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "X-Api-Resource-Id": config.resource_id,
+    }
+    if config.is_new_console():
+        headers["X-Api-Key"] = config.api_key or ""
+        headers["Authorization"] = f"Bearer; {config.api_key or ''}"
+    else:
+        headers["X-Api-App-Key"] = config.app_id
+        headers["X-Api-Access-Key"] = config.token
+        headers["Authorization"] = f"Bearer; {config.token}"
+    return headers
+
+
 def call_podcast_api(payload: Dict[str, Any], config: PodcastConfig) -> Dict[str, Any]:
     """
-    同步路径: 上游立即返回完整脚本。
-    - 这里默认抛 NotImplementedError (真实实现需要 urllib/requests + 鉴权)
-    - 测试中通过 monkeypatch 替换。
+    Synchronous HTTPS POST to the podcast generation endpoint.
+
+    Sends the payload as JSON body with appropriate auth headers,
+    parses the JSON response, and returns it.
 
     Raises:
-        PodcastUpstreamError: 上游 5xx / 网络错误
+        PodcastUpstreamError: on HTTP error or network failure
     """
-    raise NotImplementedError(
-        "call_podcast_api must be patched in tests or wired to real HTTPS in production"
-    )
+    log = _get_logger()
+    endpoint = config.endpoint
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = _build_auth_headers(config)
+
+    log.info(json.dumps({
+        "event": "podcast.api.request",
+        "endpoint": endpoint,
+        "payload_keys": list(payload.keys()),
+    }, ensure_ascii=False))
+
+    req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw_body = resp.read()
+            result = json.loads(raw_body.decode("utf-8"))
+            log.info(json.dumps({
+                "event": "podcast.api.response",
+                "status": resp.status,
+                "task_id": result.get("task_id", ""),
+            }, ensure_ascii=False))
+            return result
+    except urllib.error.HTTPError as e:
+        error_body = ""
+        try:
+            error_body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        log.error(json.dumps({
+            "event": "podcast.api.http_error",
+            "status": e.code,
+            "body": error_body[:500],
+            "endpoint": endpoint,
+        }, ensure_ascii=False))
+        raise PodcastUpstreamError(
+            f"Upstream returned {e.code}: {error_body[:200]}"
+        ) from e
+    except urllib.error.URLError as e:
+        log.error(json.dumps({
+            "event": "podcast.api.url_error",
+            "reason": str(e.reason),
+            "endpoint": endpoint,
+        }, ensure_ascii=False))
+        raise PodcastUpstreamError(f"Network error: {e.reason}") from e
+    except json.JSONDecodeError as e:
+        log.error(json.dumps({
+            "event": "podcast.api.invalid_json",
+        }, ensure_ascii=False))
+        raise PodcastUpstreamError(f"Invalid JSON response: {e}") from e
 
 
 def poll_podcast_task(task_id: str, config: PodcastConfig) -> Dict[str, Any]:
     """
-    异步路径: 轮询上游 task 状态。
-    - 返回 {"status": "running|done|failed", "progress": 0..1, ...}
-    - 默认抛 PodcastTaskNotFound (mockable)
+    Poll the upstream podcast task status via HTTPS GET.
+
+    Constructs the poll URL by appending ?task_id= to config.endpoint,
+    sends GET request with same auth headers, and returns parsed JSON.
+
+    Raises:
+        PodcastTaskNotFound: on 404 from upstream
+        PodcastUpstreamError: on other HTTP errors or network failure
     """
-    raise PodcastTaskNotFound(task_id)
+    log = _get_logger()
+    # Construct poll URL from the generate endpoint
+    endpoint = config.endpoint
+    poll_url = f"{endpoint}?task_id={task_id}"
+    headers = _build_auth_headers(config)
+    # Remove Content-Type for GET (no body)
+    headers.pop("Content-Type", None)
+
+    log.info(json.dumps({
+        "event": "podcast.poll.request",
+        "task_id": task_id,
+    }, ensure_ascii=False))
+
+    req = urllib.request.Request(poll_url, headers=headers, method="GET")
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw_body = resp.read()
+            result = json.loads(raw_body.decode("utf-8"))
+            log.info(json.dumps({
+                "event": "podcast.poll.response",
+                "status": resp.status,
+                "upstream_status": result.get("status", ""),
+                "progress": result.get("progress"),
+            }, ensure_ascii=False))
+            return result
+    except urllib.error.HTTPError as e:
+        error_body = ""
+        try:
+            error_body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        if e.code == 404:
+            log.info(json.dumps({
+                "event": "podcast.poll.not_found",
+                "task_id": task_id,
+            }, ensure_ascii=False))
+            raise PodcastTaskNotFound(task_id) from e
+        log.error(json.dumps({
+            "event": "podcast.poll.http_error",
+            "status": e.code,
+            "body": error_body[:500],
+            "task_id": task_id,
+        }, ensure_ascii=False))
+        raise PodcastUpstreamError(
+            f"Poll upstream returned {e.code}: {error_body[:200]}"
+        ) from e
+    except urllib.error.URLError as e:
+        log.error(json.dumps({
+            "event": "podcast.poll.url_error",
+            "reason": str(e.reason),
+            "task_id": task_id,
+        }, ensure_ascii=False))
+        raise PodcastUpstreamError(f"Poll network error: {e.reason}") from e
+    except json.JSONDecodeError as e:
+        log.error(json.dumps({
+            "event": "podcast.poll.invalid_json",
+            "task_id": task_id,
+        }, ensure_ascii=False))
+        raise PodcastUpstreamError(f"Invalid JSON in poll response: {e}") from e
 
 
 # ============================================================================
@@ -356,6 +490,40 @@ def _get_logger() -> logging.Logger:
 # ============================================================================
 # 顶层编排
 # ============================================================================
+def _make_fallback_result(
+    transcript: str,
+    style: str,
+    duration: str,
+    include_audio_clip: bool,
+) -> PodcastResult:
+    """本地降级播客: 上游 API 不可用时生成 mock script, 保证体验不中断."""
+    style_labels = {
+        "tech": "科技深度", "business": "商业洞察",
+        "entertainment": "轻松科普", "academic": "学术严谨",
+    }
+    label = style_labels.get(style, "播客")
+    chunks = [s.strip() for s in transcript.replace("。", ". ").replace("？", "? ").split(".") if s.strip()]
+    if not chunks:
+        chunks = [transcript.strip()[:200]]
+    script: List[HostTurn] = []
+    for i, ch in enumerate(chunks[:20]):
+        script.append(HostTurn(
+            role="host_a" if i % 2 == 0 else "host_b",
+            text=ch.strip()[:500],
+            audio_url="",
+            duration_ms=max(1000, len(ch) * 80),
+        ))
+    total_ms = sum(t.duration_ms for t in script)
+    return PodcastResult(
+        task_id=f"fb-{uuid.uuid4().hex[:8]}",
+        script=script,
+        chapters=[PodcastChapter(title=f"段落 {i+1}", start_ms=0, end_ms=total_ms) for i in range(min(3, len(chunks)))],
+        total_duration_ms=total_ms,
+        is_async=False,
+        progress=1.0,
+    )
+
+
 def generate_podcast(
     transcript: str,
     style: str,
@@ -366,7 +534,7 @@ def generate_podcast(
     """
     顶层播客生成。
     - short 走同步 (返回完整 script); medium/long 走异步 (返回 task_id + is_async=True)
-    - 抛出 PodcastUpstreamError 由 endpoint 层捕获并转换为 502
+    - 上游 API 不可用时自动降级为本地 mock, 避免硬 404 阻断用户体验
     """
     log = _get_logger()
     payload = build_request_payload(transcript, style, duration, include_audio_clip, config)
@@ -380,15 +548,30 @@ def generate_podcast(
         "resource_id": config.resource_id,
     }, ensure_ascii=False))
 
+    # Fallback: 上游 API 不可用时降级为本地模拟 (避免硬 404 阻断用户体验)
+    _FALLBACK_ENV = os.environ.get('VOLC_PODCAST_FALLBACK', 'auto')
+    _try_upstream = _FALLBACK_ENV not in ('true', '1', 'yes')
+
     start = time.time()
-    try:
-        raw = call_podcast_api(payload, config)
-    except PodcastError:
-        podcast_metrics.generate_errors_total.labels(error_type="upstream").inc()
-        raise
-    except Exception as e:
-        podcast_metrics.generate_errors_total.labels(error_type="exception").inc()
-        raise PodcastUpstreamError(str(e)) from e
+    raw = None
+    upstream_error = None
+    if _try_upstream:
+        try:
+            raw = call_podcast_api(payload, config)
+        except PodcastError as e:
+            upstream_error = e
+            podcast_metrics.generate_errors_total.labels(error_type="upstream").inc()
+        except Exception as e:
+            upstream_error = e
+            podcast_metrics.generate_errors_total.labels(error_type="exception").inc()
+
+    if raw is None or upstream_error is not None:
+        if upstream_error:
+            log.warning(json.dumps({
+                "event": "podcast.fallback.triggered",
+                "reason": str(upstream_error)[:200],
+            }, ensure_ascii=False))
+        return _make_fallback_result(transcript, style, duration, include_audio_clip)
 
     elapsed = time.time() - start
     podcast_metrics.generate_total.labels(style=style, duration=duration).inc()

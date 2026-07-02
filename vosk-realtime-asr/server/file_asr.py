@@ -395,17 +395,20 @@ def validate_file_meta(
 # ============================================================================
 def register_routes(app):
     """
-    把 /api/file-asr/* 三个 endpoint 挂到 Flask app.
-    行为:
-      POST /api/file-asr/submit   { file_url?, file_meta? }  → { task_id, status }
-      GET  /api/file-asr/status/<task_id>                    → { task_id, status, utterances? }
-      GET  /api/file-asr/result/<task_id>                    → { text, utterances, speakers }
+    把 /api/file-asr/* endpoint 挂到 Flask app.
 
-    submit 支持两种入参:
-      A) JSON:  { file_url, enable_diarization, speaker_count }
-      B) multipart: file=@audio.mp3   (先存到 /tmp 再走本地 URL, 当前版本仅支持 A)
+    POST /api/file-asr/submit   JSON { file_url } or multipart file upload
+                                 → { task_id, status }
+    GET  /api/file-asr/status/<task_id>
+                                 → { task_id, status, utterances? }
+    GET  /api/file-asr/result/<task_id>
+                                 → { text, utterances, speakers }
+    POST /api/file-asr/upload    multipart file=@audio.mp3 (streaming ASR)
+                                 → { text, utterances, speakers }
     """
     from flask import request, jsonify
+    import subprocess as _subprocess
+    import uuid as _uuid
 
     def _cfg():
         try:
@@ -413,15 +416,246 @@ def register_routes(app):
         except RuntimeError as e:
             return None, str(e)
 
+    # ------------------------------------------------------------------
+    # Streaming ASR helper (process local file via WSS, no URL needed)
+    # ------------------------------------------------------------------
+    def _process_file_via_streaming(file_path: str, original_name: str) -> dict:
+        """
+        把本地音频/视频文件通过火山引擎流式 ASR (WSS) 识别.
+        先 ffmpeg 转 PCM 16kHz mono, 再走 VolcengineSession 流式推送.
+        结果同步返回.
+        """
+        from volcengine_session import VolcengineSession
+
+        # 流式 ASR 凭据 (与实时转写共用)
+        streaming_cfg = {
+            'app_key': os.environ.get('VOLC_APP_KEY', ''),
+            'access_token': os.environ.get('VOLC_ACCESS_TOKEN', ''),
+            'api_key': os.environ.get('VOLC_API_KEY', ''),
+            'resource_id': os.environ.get('VOLC_RESOURCE_ID', 'volc.seedasr.sauc.duration'),
+            'endpoint': os.environ.get('VOLC_ENDPOINT', 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async'),
+            'model_name': os.environ.get('VOLC_MODEL_NAME', 'bigmodel'),
+        }
+        if not streaming_cfg['app_key'] or not streaming_cfg['access_token']:
+            raise RuntimeError('流式 ASR 凭证未配置 (VOLC_APP_KEY / VOLC_ACCESS_TOKEN)')
+
+        # Step 1: ffmpeg → raw PCM 16kHz 16-bit mono
+        pcm_path = file_path + '.pcm'
+        try:
+            result = _subprocess.run(
+                ['ffmpeg', '-y', '-i', file_path,
+                 '-acodec', 'pcm_s16le', '-ac', '1', '-ar', '16000',
+                 '-f', 's16le', pcm_path],
+                check=True, capture_output=True, timeout=180,
+            )
+        except _subprocess.TimeoutExpired:
+            raise RuntimeError('音频转换超时 (ffmpeg)')
+        except _subprocess.CalledProcessError as e:
+            stderr = (e.stderr or b'').decode('utf-8', errors='replace')[-300:]
+            raise RuntimeError(f'音频转换失败: {stderr}')
+        except FileNotFoundError:
+            raise RuntimeError('ffmpeg 未安装, 无法处理音频文件')
+
+        try:
+            pcm_size = os.path.getsize(pcm_path)
+            if pcm_size == 0:
+                raise RuntimeError('音频转换后为空 — 文件可能损坏或静音')
+        except OSError:
+            pass
+
+        # Step 2: 流式推送 PCM 到火山引擎 WSS
+        results_lock = threading.Lock()
+        final_utterances: list = []
+        final_text_parts: list = []
+        errors: list = []
+        done = threading.Event()
+        sid = 'file-' + (_uuid.uuid4().hex)[:8]
+
+        def _on_partial(text, _sid):
+            pass
+
+        def _on_final(text, utterances, speakers, latency_ms, _sid):
+            nonlocal final_utterances, final_text_parts
+            with results_lock:
+                if utterances:
+                    final_utterances = list(utterances)
+                if text:
+                    final_text_parts.append(text)
+
+        def _on_error(code, message, _sid):
+            errors.append({'code': code, 'message': message})
+            done.set()
+
+        sess = VolcengineSession(
+            sid=sid,
+            config=streaming_cfg,
+            on_partial=_on_partial,
+            on_final=_on_final,
+            on_error=_on_error,
+        )
+
+        try:
+            sess.start()
+            if not sess.wait_until_ready(timeout=15):
+                raise RuntimeError('流式 ASR WSS 握手超时 (15s)')
+
+            # Read & feed PCM in chunks
+            with open(pcm_path, 'rb') as fh:
+                while True:
+                    chunk = fh.read(4000)  # 250ms @ 16kHz * 2B
+                    if not chunk:
+                        break
+                    sess.send_audio(chunk)
+                    time.sleep(0.02)  # 避免性能无关的速推
+
+            sess.finalize(b'')
+
+            # Wait for reader thread to finish (server closes WSS after last utterance)
+            deadline = time.time() + 120
+            while time.time() < deadline:
+                if errors:
+                    break
+                if not sess.is_alive():
+                    break
+                time.sleep(0.3)
+
+            sess.close()
+        except Exception:
+            try:
+                sess.close()
+            except Exception:
+                pass
+            raise
+        finally:
+            # Clean up temp PCM
+            try:
+                os.unlink(pcm_path)
+            except OSError:
+                pass
+
+        if errors:
+            raise RuntimeError(f"ASR 错误: {errors[0].get('message', str(errors[0]))}")
+
+        # Combine results
+        if final_utterances:
+            all_text = ''.join(u.get('text', '') for u in final_utterances)
+            speakers = list({u.get('speaker_id', 'unknown') for u in final_utterances})
+            return {
+                'text': all_text,
+                'utterances': final_utterances,
+                'speakers': [{'id': s} for s in speakers],
+            }
+        elif final_text_parts:
+            all_text = ''.join(final_text_parts)
+            return {
+                'text': all_text,
+                'utterances': [{'text': all_text, 'start_time': 0, 'end_time': 0, 'speaker_id': 'unknown', 'definite': True}],
+                'speakers': [{'id': 'unknown'}],
+            }
+        else:
+            return {
+                'text': '',
+                'utterances': [],
+                'speakers': [],
+            }
+
+    # ------------------------------------------------------------------
+    # Routes
+    # ------------------------------------------------------------------
+    @app.post("/api/file-asr/upload")
+    def _upload():
+        """接收文件, 走流式 ASR 同步返回结果."""
+        if 'file' not in request.files:
+            return jsonify({"error": "缺少 file 字段 (multipart/form-data)"}), 400
+
+        f = request.files['file']
+        if not f.filename:
+            return jsonify({"error": "文件名为空"}), 400
+
+        # Validate extension
+        import os as _os
+        ext = _os.path.splitext(f.filename)[1].lower()
+        if ext not in SUPPORTED_EXTS:
+            return jsonify({
+                "error": f"不支持的文件格式: {ext or '(none)'}",
+                "supported": sorted(SUPPORTED_EXTS),
+            }), 400
+
+        # Save to temp
+        import tempfile as _tempfile
+        tmp_path = None
+        try:
+            tmp_fd, tmp_path = _tempfile.mkstemp(suffix=ext, prefix='file_asr_')
+            _os.close(tmp_fd)
+            f.save(tmp_path)
+
+            _log.info("[FileASR] upload { filename=%s, size=%d }", f.filename, _os.path.getsize(tmp_path))
+
+            result = _process_file_via_streaming(tmp_path, f.filename)
+            return jsonify({
+                "ok": True,
+                "task_id": "stream-" + (_uuid.uuid4().hex)[:8],
+                "status": "done",
+                **result,
+            })
+        except RuntimeError as e:
+            _log.error("[FileASR] upload error: %s", e)
+            return jsonify({"error": str(e)}), 502
+        except Exception as e:
+            _log.error("[FileASR] upload unexpected: %s", e)
+            return jsonify({"error": str(e)}), 500
+        finally:
+            if tmp_path:
+                try:
+                    _os.unlink(tmp_path)
+                except OSError:
+                    pass
+
     @app.post("/api/file-asr/submit")
     def _submit():
         cfg, err = _cfg()
         if cfg is None:
             return jsonify({"error": err, "code": "config_missing"}), 503
+
+        # Support both JSON body and multipart
+        if request.content_type and 'multipart' in request.content_type:
+            # Multipart: save file, process via streaming
+            if 'file' in request.files:
+                f = request.files['file']
+                if not f.filename:
+                    return jsonify({"error": "文件名为空"}), 400
+                import os as _os2
+                ext = _os2.path.splitext(f.filename)[1].lower()
+                if ext not in SUPPORTED_EXTS:
+                    return jsonify({"error": f"不支持的文件格式: {ext}", "supported": sorted(SUPPORTED_EXTS)}), 400
+                import tempfile as _tf2
+                tmp_path = None
+                try:
+                    tmp_fd, tmp_path = _tf2.mkstemp(suffix=ext, prefix='file_asr_')
+                    _os2.close(tmp_fd)
+                    f.save(tmp_path)
+                    result = _process_file_via_streaming(tmp_path, f.filename)
+                    return jsonify({
+                        "ok": True,
+                        "task_id": "stream-" + (_uuid.uuid4().hex)[:8],
+                        "status": "done",
+                        **result,
+                    })
+                except RuntimeError as e2:
+                    return jsonify({"error": str(e2)}), 502
+                finally:
+                    if tmp_path:
+                        try:
+                            _os2.unlink(tmp_path)
+                        except OSError:
+                            pass
+            return jsonify({"error": "multipart 模式下需要 file 字段"}), 400
+
+        # JSON body: file_url mode (legacy)
         data = request.get_json(silent=True) or {}
         file_url = data.get("file_url") or data.get("url")
         if not file_url:
-            return jsonify({"error": "file_url is required"}), 400
+            return jsonify({"error": "file_url is required (or use multipart file upload)"}), 400
         try:
             r = submit_file_url(
                 cfg,
